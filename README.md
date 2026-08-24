@@ -121,18 +121,16 @@ The cast consumes the old value and pushes the converted value. Assignment remai
 ```text
 loop:
     ...
-    condition loop jz
+    condition loop jnz    // jump when condition is non-zero/true
 ```
 
-For the current MVP, `jz` follows the control-flow convention already used by the MAD examples: **jump when the condition is true/non-zero**. `jmp` is unconditional. A label is a first-class `label` value when referenced with `&label`.
-
-This is intentionally documented as an MVP semantic choice because the name `jz` suggests the opposite to assembly programmers; a future language-spec revision should either rename the operation or settle a less surprising condition convention.
+Conditional jumps follow the assembly convention: `jz` pops a condition and jumps **when it is zero/false**, `jnz` jumps **when it is non-zero/true**. `jmp` is unconditional. A label is a first-class `label` value when referenced with `&label`.
 
 Example:
 
 ```text
 :countdown [n@i64]
-    n 0 == done jz
+    n 0 == done jnz
     n print println
     n 1 - countdown
     ret

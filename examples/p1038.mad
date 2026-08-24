@@ -24,7 +24,7 @@ n 1 + dup * 8 * alloc E
 0 u@i64
 read_nodes:
     i 1 + &i =
-    i n > done_nodes jz
+    i n > done_nodes jnz
 
     read@i64 &c =
     c C i 8 * write@i64
@@ -47,7 +47,7 @@ done_nodes:
 0 cj@i64
 read_edges:
     e 1 + &e =
-    e p > done_edges jz
+    e p > done_edges jnz
 
     read@i64 &x =
     read@i64 &y =
@@ -75,8 +75,8 @@ done_edges:
 0 tail@i64
 init_queue:
     i 1 + &i =
-    i n > init_queue_done jz
-    IN i 8 * mread@i64 0 != init_queue_skip jz
+    i n > init_queue_done jnz
+    IN i 8 * mread@i64 0 != init_queue_skip jnz
     tail 1 + &tail =
     i Q tail 8 * write@i64
 init_queue_skip:
@@ -86,7 +86,7 @@ init_queue_done:
 0 head@i64
 0 j@i64
 process:
-    head tail >= finished jz
+    head tail >= finished jnz
 
     head 1 + &head =
     Q head 8 * mread@i64 &x =
@@ -94,14 +94,14 @@ process:
     0 &j =
     scan_edges:
         j 1 + &j =
-        j n > scan_done jz
+        j n > scan_done jnz
 
         x n 1 + * j + 8 * &off =
-        E off mread@i64 0 == no_edge jz
+        E off mread@i64 0 == no_edge jnz
 
         // If C[x] > 0, add W[x][j] * C[x] to C[j].
         C x 8 * mread@i64 &cx =
-        cx 0 <= no_signal jz
+        cx 0 <= no_signal jnz
         W off mread@i64 &wv =
         wv cx * &delta =
         C j 8 * mread@i64 &cj =
@@ -110,7 +110,7 @@ process:
         // Every processed predecessor reduces indegree, regardless of signal.
 no_signal:
         IN j 8 * mread@i64 1 - IN j 8 * write@i64
-        IN j 8 * mread@i64 0 != not_ready jz
+        IN j 8 * mread@i64 0 != not_ready jnz
 
         // Once all predecessors are processed, subtract U and enqueue.
         C j 8 * mread@i64
@@ -132,10 +132,10 @@ finished:
 0 found@i64
 print_loop:
     i 1 + &i =
-    i n > print_done jz
+    i n > print_done jnz
 
-    OUT i 8 * mread@i64 0 != not_output jz
-    C i 8 * mread@i64 0 <= not_output jz
+    OUT i 8 * mread@i64 0 != not_output jnz
+    C i 8 * mread@i64 0 <= not_output jnz
 
     i printn
     " " printstr
@@ -147,7 +147,7 @@ not_output:
     print_loop jmp
 
 print_done:
-found 0 != have_output jz
+found 0 != have_output jnz
 "NULL" printstr
 println
 have_output:

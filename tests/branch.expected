@@ -1,0 +1,4 @@
+ok:jz-zero-jumps
+ok:jz-nonzero-falls
+ok:jnz-nonzero-jumps
+ok:jnz-zero-falls

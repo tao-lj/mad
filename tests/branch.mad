@@ -1,0 +1,20 @@
+0 z@i64 1 o@i64
+
+z t1 jz
+"FAIL1" printstr jmp l2
+t1: "ok:jz-zero-jumps" printstr println
+l2:
+
+o t2 jz
+"ok:jz-nonzero-falls" printstr println
+t2:
+
+o t3 jnz
+"FAIL3" printstr jmp l4
+t3: "ok:jnz-nonzero-jumps" printstr println
+l4:
+
+z t4 jnz
+"ok:jnz-zero-falls" printstr println
+t4:
+halt

@@ -31,6 +31,8 @@ test: $(TARGET)
 	./$(TARGET) examples/nqueens.mad < tests/nqueens.in | diff -u tests/nqueens.expected -
 	@echo "== p1038 =="
 	./$(TARGET) examples/p1038.mad < tests/p1038.in | diff -u tests/p1038.expected -
+	@echo "== branch =="
+	./$(TARGET) tests/branch.mad | diff -u tests/branch.expected -
 	@echo "All tests passed."
 
 clean:

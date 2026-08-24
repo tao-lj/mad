@@ -538,17 +538,21 @@ static bool op_io(VM *vm, const Token *t) {
 
 static bool op_jump(VM *vm, Frame *fr, FuncSym *fn, const Token *t) {
     const char *s = t->text;
-    if (!word_is(s, "jz") && !word_is(s, "jmp") && !word_is(s, "jump")) return false;
+    if (!word_is(s, "jz") && !word_is(s, "jnz") &&
+        !word_is(s, "jmp") && !word_is(s, "jump")) {
+        return false;
+    }
 
     Value target = valstack_pop(&vm->stack, s);
     if (target.type != T_LABEL)
         fatal_at(t->line, "%s expects label, got %s", s, type_name(target.type));
     if (target.idx >= fn->labels.n) fatal_at(t->line, "invalid label id");
 
-    if (word_is(s, "jz")) {
-        // MVP convention: jz jumps when the condition is true/non-zero.
+    if (word_is(s, "jz") || word_is(s, "jnz")) {
         Value cond = valstack_pop(&vm->stack, s);
-        if (!is_true(vm, cond, t)) return true;
+        bool c = is_true(vm, cond, t);
+        // Assembly convention: jz jumps on zero/false, jnz on non-zero/true.
+        if (word_is(s, "jz") ? c : !c) return true;
     }
     fr->pc = fn->labels.v[target.idx].token_index;
     return true;
