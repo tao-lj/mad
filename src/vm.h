@@ -5,6 +5,8 @@
 #include "lexer.h"
 #include "value.h"
 
+typedef struct Op Op; // threaded-code instruction, defined in exec.c
+
 typedef struct {
     char *name;
     TypeKind type;
@@ -28,12 +30,20 @@ typedef struct {
     char **globals;
     size_t global_count;
     LabelVec labels;
+
+    // Threaded-code compilation (lazy, on first execution).
+    Op *code;        // emitted ops
+    size_t code_n;
+    size_t *code_map; // body-relative token index -> first op index
+    size_t map_n;
+    char **owned;     // strings referenced by compiled ops
+    size_t owned_n, owned_cap;
+    bool compiled;
 } FuncSym;
 typedef struct { FuncSym *v; size_t n, cap; } FuncVec;
 
 typedef struct {
     FuncSym *fn;
-    size_t pc;
     VarVec locals;
     uint64_t *local_mems; // frame-lifetime mem ids to release on return
     size_t local_mem_n, local_mem_cap;

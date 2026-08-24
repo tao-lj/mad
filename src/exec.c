@@ -1,4 +1,15 @@
-// Interpreter core: frames, opcode dispatch, variable resolution.
+// Interpreter core: threaded-code compiler and dispatch loop.
+//
+// Each function body (and the top-level code) is compiled once, lazily, into
+// an array of Op records. Dispatch is direct threaded: op->code holds the
+// address of a label inside execute_code() (GCC labels-as-values), so
+// executing one operation costs a single indirect goto. The compiler resolves
+// everything static ahead of time -- literal spellings, name classification,
+// call targets, jump targets -- so the hot loop performs no strcmp chains and
+// no symbol-table scans. Only variable existence stays dynamic (variables can
+// be created by executing arbitrary stores), and those checks mirror the old
+// token-walking interpreter exactly.
+
 #include "vm.h"
 
 #include "common.h"
@@ -8,27 +19,27 @@
 #include <stdlib.h>
 #include <string.h>
 
-static bool word_is(const char *s, const char *kw) { return strcmp(s, kw) == 0; }
-
 static bool is_top_level(Frame *fr) { return strcmp(fr->fn->name, "<top>") == 0; }
+
+static bool word_is(const char *s, const char *kw) { return strcmp(s, kw) == 0; }
 
 // ---------- Value accessors ----------
 
-static double value_to_f64(VM *vm, Value v, const Token *t) {
-    if (v.type != T_F64) fatal_at(t->line, "expected f64, got %s", type_name(v.type));
+static double value_to_f64(VM *vm, Value v, size_t line) {
+    if (v.type != T_F64) fatal_at(line, "expected f64, got %s", type_name(v.type));
     return vm->f64.v[v.idx];
 }
 
-static int64_t get_i64(VM *vm, Value v, const Token *t) {
-    if (v.type != T_I64) fatal_at(t->line, "expected i64, got %s", type_name(v.type));
+static int64_t get_i64(VM *vm, Value v, size_t line) {
+    if (v.type != T_I64) fatal_at(line, "expected i64, got %s", type_name(v.type));
     return vm->i64.v[v.idx];
 }
 
-static bool is_true(VM *vm, Value v, const Token *t) {
+static bool is_true(VM *vm, Value v, size_t line) {
     if (v.type == T_BOOL) return vm->bytes.v[v.idx] != 0;
     if (v.type == T_I64) return vm->i64.v[v.idx] != 0;
     if (v.type == T_U64) return vm->u64.v[v.idx] != 0;
-    fatal_at(t->line, "expected boolean/integer condition, got %s", type_name(v.type));
+    fatal_at(line, "expected boolean/integer condition, got %s", type_name(v.type));
     return false;
 }
 
@@ -65,29 +76,29 @@ static Var *resolve_var(VM *vm, Frame *fr, const char *name, bool *is_global) {
     return NULL;
 }
 
-static void require_initialized(Var *v, const char *name, const Token *t) {
-    if (!v->initialized) fatal_at(t->line, "uninitialized variable '%s'", name);
+static void require_initialized(Var *v, const char *name, size_t line) {
+    if (!v->initialized) fatal_at(line, "uninitialized variable '%s'", name);
 }
 
-static Value load_var(VM *vm, Frame *fr, const char *name, const Token *t) {
+static Value load_var(VM *vm, Frame *fr, const char *name, size_t line) {
     bool unused = false;
     Var *v = resolve_var(vm, fr, name, &unused);
     if (!v) {
         if (global_declared_in(fr, name))
-            fatal_at(t->line, "declared global variable '%s' does not exist", name);
-        fatal_at(t->line, "unknown variable '%s'", name);
+            fatal_at(line, "declared global variable '%s' does not exist", name);
+        fatal_at(line, "unknown variable '%s'", name);
     }
-    require_initialized(v, name, t);
+    require_initialized(v, name, line);
     return v->value;
 }
 
-static Value make_ptr_value(VM *vm, Frame *fr, const char *name, const Token *t) {
+static Value make_ptr_value(VM *vm, Frame *fr, const char *name, size_t line) {
     bool g = false;
     Var *v = resolve_var(vm, fr, name, &g);
     if (!v) {
         if (global_declared_in(fr, name))
-            fatal_at(t->line, "declared global variable '%s' does not exist", name);
-        fatal_at(t->line, "unknown variable '%s'", name);
+            fatal_at(line, "declared global variable '%s' does not exist", name);
+        fatal_at(line, "unknown variable '%s'", name);
     }
     if (g) {
         size_t gi = (size_t)(v - vm->globals.v);
@@ -97,30 +108,30 @@ static Value make_ptr_value(VM *vm, Frame *fr, const char *name, const Token *t)
     return (Value){T_PTR, ptr_new(&vm->ptrs, (PtrRef){fr->frame_id, li, false, 0})};
 }
 
-static Var *ptr_target(VM *vm, Value pv, const Token *t) {
-    if (pv.type != T_PTR) fatal_at(t->line, "expected ptr, got %s", type_name(pv.type));
+static Var *ptr_target(VM *vm, Value pv, size_t line) {
+    if (pv.type != T_PTR) fatal_at(line, "expected ptr, got %s", type_name(pv.type));
     PtrRef r = vm->ptrs.v[pv.idx];
     if (r.is_global) {
         if (r.global_index >= vm->globals.n)
-            fatal_at(t->line, "dangling global pointer");
+            fatal_at(line, "dangling global pointer");
         return &vm->globals.v[r.global_index];
     }
-    if (r.frame_id >= vm->frames.n) fatal_at(t->line, "dangling local pointer");
+    if (r.frame_id >= vm->frames.n) fatal_at(line, "dangling local pointer");
     Frame *owner = &vm->frames.v[r.frame_id];
-    if (r.local_index >= owner->locals.n) fatal_at(t->line, "dangling local pointer");
+    if (r.local_index >= owner->locals.n) fatal_at(line, "dangling local pointer");
     return &owner->locals.v[r.local_index];
 }
 
-static void assign_var(Var *dst, Value value, const Token *t) {
+static void assign_var(Var *dst, Value value, size_t line) {
     if (dst->type != value.type) {
-        fatal_at(t->line, "type mismatch in assignment: %s <- %s",
+        fatal_at(line, "type mismatch in assignment: %s <- %s",
                  type_name(dst->type), type_name(value.type));
     }
     dst->value = value;
     dst->initialized = true;
 }
 
-static Value cast_value(VM *vm, Value v, TypeKind ty, const Token *tok) {
+static Value cast_value(VM *vm, Value v, TypeKind ty, size_t line) {
     if (v.type == ty) return v;
     switch (ty) {
     case T_I64:
@@ -156,7 +167,7 @@ static Value cast_value(VM *vm, Value v, TypeKind ty, const Token *tok) {
     case T_PTR:
         break;
     }
-    fatal_at(tok->line, "unsupported cast from %s to %s", type_name(v.type), type_name(ty));
+    fatal_at(line, "unsupported cast from %s to %s", type_name(v.type), type_name(ty));
     return v;
 }
 
@@ -174,31 +185,21 @@ static uint8_t decode_escape(char c) {
     }
 }
 
-static Value parse_literal(VM *vm, const Token *t) {
-    switch (t->kind) {
-    case TOK_INT:
-        return make_i64(&vm->i64, strtoll(t->text, NULL, 10));
-    case TOK_UINT:
-        return make_u64(&vm->u64, strtoull(t->text + 2, NULL, 10));
-    case TOK_FLOAT:
-        return make_f64(&vm->f64, strtod(t->text, NULL));
-    case TOK_STRING: {
-        size_t raw = strlen(t->text);
-        uint64_t mid = mem_new(&vm->mems, raw + 1, true, true);
-        uint8_t *out = vm->mems.v[mid].data;
-        size_t n = 0;
-        for (size_t i = 0; i < raw; ++i) {
-            if (t->text[i] == '\\' && i + 1 < raw)
-                out[n++] = decode_escape(t->text[++i]);
-            else
-                out[n++] = (uint8_t)t->text[i];
-        }
-        out[n++] = 0;
-        return (Value){T_MEMPTR, memptr_new(&vm->memptrs, mid)};
+// Decodes a string-literal token once at compile time into read-only mem, so
+// evaluating the same literal in a loop no longer allocates per iteration.
+static uint64_t compile_string_literal(VM *vm, const Token *t) {
+    size_t raw = strlen(t->text);
+    uint64_t mid = mem_new(&vm->mems, raw + 1, true, true);
+    uint8_t *out = vm->mems.v[mid].data;
+    size_t n = 0;
+    for (size_t i = 0; i < raw; ++i) {
+        if (t->text[i] == '\\' && i + 1 < raw)
+            out[n++] = decode_escape(t->text[++i]);
+        else
+            out[n++] = (uint8_t)t->text[i];
     }
-    default:
-        return (Value){T_I64, 0};
-    }
+    out[n++] = 0;
+    return mid;
 }
 
 static void print_value(VM *vm, Value v) {
@@ -217,25 +218,17 @@ static void print_value(VM *vm, Value v) {
 }
 
 // Resolves a mem/memptr stack value to its memory object id.
-static uint64_t mem_id_of(VM *vm, Value v, const Token *t, const char *op) {
+static uint64_t mem_id_of(VM *vm, Value v, size_t line, const char *op) {
     if (v.type == T_MEM) return v.idx;
     if (v.type == T_MEMPTR) return vm->memptrs.v[v.idx].mem_id;
-    fatal_at(t->line, "%s expects mem/memptr, got %s", op, type_name(v.type));
+    fatal_at(line, "%s expects mem/memptr, got %s", op, type_name(v.type));
     return 0;
 }
 
-static MemObj *require_mem(VM *vm, uint64_t mid, const Token *t) {
+static MemObj *require_mem(VM *vm, uint64_t mid, size_t line) {
     if (mid >= vm->mems.n || vm->mems.v[mid].data == NULL)
-        fatal_at(t->line, "invalid or freed memory object");
+        fatal_at(line, "invalid or freed memory object");
     return &vm->mems.v[mid];
-}
-
-static TypeKind token_read_type(const Token *t, const char *what) {
-    const char *at = strchr(t->text, '@');
-    if (!at || !at[1]) fatal_at(t->line, "%s requires type, e.g. %si64", what, t->text);
-    TypeKind ty;
-    if (!is_type_name(at + 1, &ty)) fatal_at(t->line, "unknown %s type '%s'", what, at + 1);
-    return ty;
 }
 
 // ---------- Frame-local memory tracking ----------
@@ -267,494 +260,877 @@ static void frame_release_locals(Frame *fr) {
 
 // ---------- Calls ----------
 
-static void execute_function(VM *vm, FuncSym *fn);
+static void execute_code(VM *vm, FuncSym *fn);
 
-static void call_by_value(VM *vm, FuncSym *fn, const Token *t) {
+static Frame *current_frame(VM *vm) { return &vm->frames.v[vm->frames.n - 1]; }
+
+static void call_by_value(VM *vm, FuncSym *fn, size_t line, const char *where) {
     if (vm->stack.n < fn->param_count)
-        fatal_at(t->line, "not enough arguments for function '%s'", fn->name);
+        fatal_at(line, "not enough arguments for function '%s'", fn->name);
 
     VEC_GROW(vm->frames.v, vm->frames.n, vm->frames.cap, Frame);
     size_t frame_id = vm->frames.n;
     Frame *nf = &vm->frames.v[frame_id];
     *nf = (Frame){0};
     nf->fn = fn;
-    nf->pc = fn->body_start;
     nf->frame_id = frame_id;
     vm->frames.n++;
 
     // [] reverses the source group, so the first runtime argument is popped first.
     for (size_t i = 0; i < fn->param_count; ++i) {
-        Value v = valstack_pop(&vm->stack, t->text);
+        Value v = valstack_pop(&vm->stack, where);
         if (fn->param_types[i] != v.type) {
-            fatal_at(t->line, "argument %zu of '%s' has type %s, expected %s",
+            fatal_at(line, "argument %zu of '%s' has type %s, expected %s",
                      i + 1, fn->name, type_name(v.type), type_name(fn->param_types[i]));
         }
         if (vm_find_var(&vm->globals, fn->params[i])) {
-            fatal_at(t->line, "local parameter '%s' conflicts with global variable", fn->params[i]);
+            fatal_at(line, "local parameter '%s' conflicts with global variable", fn->params[i]);
         }
         if (vm_find_var(&nf->locals, fn->params[i])) {
-            fatal_at(t->line, "duplicate parameter '%s'", fn->params[i]);
+            fatal_at(line, "duplicate parameter '%s'", fn->params[i]);
         }
         vm_add_var(&nf->locals, fn->params[i], fn->param_types[i], true, v);
     }
 
-    execute_function(vm, fn);
+    execute_code(vm, fn);
     frame_release_local_mem(vm, &vm->frames.v[frame_id]);
     frame_release_locals(&vm->frames.v[frame_id]);
     vm->frames.n = frame_id;
 }
 
-// ---------- Opcode groups ----------
-// Each handler returns true when it consumed the word.
-
-static bool op_arithmetic(VM *vm, const Token *t) {
-    const char *s = t->text;
-    bool plus = word_is(s, "+"), minus = word_is(s, "-"), times = word_is(s, "*");
-    bool div = word_is(s, "/"), rem = word_is(s, "%");
-    if (!plus && !minus && !times && !div && !rem) return false;
-
-    Value b = valstack_pop(&vm->stack, s);
-    Value a = valstack_pop(&vm->stack, s);
-    if (a.type == T_F64 || b.type == T_F64) {
-        double x = value_to_f64(vm, a, t);
-        double y = value_to_f64(vm, b, t);
-        double r = 0;
-        if (plus) r = x + y;
-        else if (minus) r = x - y;
-        else if (times) r = x * y;
-        else if (div) r = x / y;
-        else fatal_at(t->line, "%% is not defined for f64");
-        valstack_push(&vm->stack, make_f64(&vm->f64, r));
-        return true;
-    }
-
-    int64_t x = get_i64(vm, a, t);
-    int64_t y = get_i64(vm, b, t);
-    int64_t r = 0;
-    if (plus) r = x + y;
-    else if (minus) r = x - y;
-    else if (times) r = x * y;
-    else if (div) {
-        if (!y) fatal_at(t->line, "division by zero");
-        r = x / y;
+static void declare_variable(VM *vm, Frame *fr, const char *base, TypeKind ty,
+                             Value init, size_t line) {
+    if (is_top_level(fr)) {
+        if (vm_find_var(&vm->globals, base))
+            fatal_at(line, "global variable '%s' already exists", base);
+        vm_add_var(&vm->globals, base, ty, true, init);
     } else {
-        if (!y) fatal_at(t->line, "division by zero");
-        r = x % y;
+        if (vm_find_var(&vm->globals, base))
+            fatal_at(line, "local variable '%s' conflicts with global variable", base);
+        vm_add_var(&fr->locals, base, ty, true, init);
     }
-    valstack_push(&vm->stack, make_i64(&vm->i64, r));
-    return true;
 }
 
-static bool op_comparison(VM *vm, const Token *t) {
-    const char *s = t->text;
-    if (!word_is(s, "==") && !word_is(s, "!=") && !word_is(s, "<") &&
-        !word_is(s, ">") && !word_is(s, "<=") && !word_is(s, ">=")) {
-        return false;
-    }
+// ---------- Threaded code ----------
 
-    Value b = valstack_pop(&vm->stack, s);
-    Value a = valstack_pop(&vm->stack, s);
-    bool r = false;
-    if (a.type == T_I64 && b.type == T_I64) {
-        int64_t x = vm->i64.v[a.idx], y = vm->i64.v[b.idx];
-        if (word_is(s, "==")) r = x == y;
-        else if (word_is(s, "!=")) r = x != y;
-        else if (word_is(s, "<")) r = x < y;
-        else if (word_is(s, ">")) r = x > y;
-        else if (word_is(s, "<=")) r = x <= y;
-        else r = x >= y;
-    } else if (a.type == T_F64 && b.type == T_F64) {
-        double x = vm->f64.v[a.idx], y = vm->f64.v[b.idx];
-        if (word_is(s, "==")) r = x == y;
-        else if (word_is(s, "!=")) r = x != y;
-        else if (word_is(s, "<")) r = x < y;
-        else if (word_is(s, ">")) r = x > y;
-        else if (word_is(s, "<=")) r = x <= y;
-        else r = x >= y;
-    } else {
-        fatal_at(t->line, "comparison requires equal scalar types, got %s", type_name(a.type));
-    }
-    valstack_push(&vm->stack, make_bool(&vm->bytes, r));
-    return true;
+typedef enum {
+    OP_PUSH_I64, OP_PUSH_U64, OP_PUSH_F64, OP_PUSH_STR,
+    OP_PUSH_LABEL, OP_PUSH_FUNC,
+    OP_WORD_VAR,   // plain word: load existing variable or declare from stack top
+    OP_REF_NAME,   // &name: ptr/memptr to variable, else first-class label/func
+    OP_DEREF_NAME, // *name
+    OP_CAST,       // !@type
+    OP_ARITH, OP_CMP, OP_ASSIGN,
+    OP_ALLOC, OP_HALLOC, OP_FREE,
+    OP_MREAD, OP_WRITE,
+    OP_PRINT, OP_PRINTLN, OP_PRINTSTR, OP_READ,
+    OP_DUP, OP_DROP, OP_SWAP, OP_ASSERT,
+    OP_CALL_FUNC, OP_CALL_IND,
+    OP_JMP, OP_JZ, OP_JNZ,
+    OP_JMP_DYN, OP_JZ_DYN, OP_JNZ_DYN,
+    OP_RET, OP_HALT,
+    OP_COUNT
+} OpCode;
+
+// Arithmetic sub-kinds (stored in op->u.i).
+enum { AR_ADD, AR_SUB, AR_MUL, AR_DIV, AR_MOD };
+// Comparison sub-kinds.
+enum { CMP_EQ, CMP_NE, CMP_LT, CMP_GT, CMP_LE, CMP_GE };
+
+typedef struct Op {
+    void *code;       // &&label inside execute_code(): the thread
+    const char *text; // original spelling, reused in diagnostics/pop context
+    size_t line;
+    union {
+        int64_t i;
+        uint64_t u;
+        double d;
+        char *name;
+    } u;
+    TypeKind ty;
+    bool has_ty;  // declared-type marker; doubles as the halloc flag
+    int64_t aux;  // pre-resolved label id ('&name' fallback), -1 when absent
+    int64_t aux2; // pre-resolved func id ('&name' fallback), -1 when absent
+} Op;
+
+typedef struct {
+    size_t op_idx; // jump op whose target needs patching
+    size_t map_idx; // body-relative destination token index
+} JumpFixup;
+
+typedef struct {
+    VM *vm;
+    FuncSym *fn;
+    bool top_level;
+    Op *v;
+    size_t n, cap;
+    size_t *map;    // body-relative token index -> first op emitted there
+    size_t map_n;
+    JumpFixup *fix; // static jumps awaiting their target op index
+    size_t fix_n, fix_cap;
+    int pending_label;    // bare label word awaiting fusion, -1 when none
+    const Token *pending_tok;
+} Compiler;
+
+static void own_string(Compiler *c, char *s) {
+    VEC_GROW(c->fn->owned, c->fn->owned_n, c->fn->owned_cap, char *);
+    c->fn->owned[c->fn->owned_n++] = s;
 }
 
-static bool op_memory(VM *vm, Frame *fr, const Token *t) {
+// Writes the thread immediately: the dispatch table is guaranteed to be
+// filled before any compilation runs (execute_code() initializes it first).
+static void **tcode_dispatch_table(void);
+
+static size_t emit_op(Compiler *c, OpCode kind, const Token *t) {
+    VEC_GROW(c->v, c->n, c->cap, Op);
+    Op *op = &c->v[c->n++];
+    *op = (Op){0};
+    op->code = tcode_dispatch_table()[kind];
+    op->text = t ? t->text : "<end>";
+    op->line = t ? t->line : 0;
+    op->aux = -1;
+    op->aux2 = -1;
+    return c->n - 1;
+}
+
+static void flush_pending_label(Compiler *c) {
+    if (c->pending_label < 0) return;
+    size_t idx = emit_op(c, OP_PUSH_LABEL, c->pending_tok);
+    c->v[idx].u.u = (uint64_t)c->pending_label;
+    c->pending_label = -1;
+    c->pending_tok = NULL;
+}
+
+static void emit_const(Compiler *c, OpCode kind, const Token *t, uint64_t payload) {
+    size_t idx = emit_op(c, kind, t);
+    c->v[idx].u.u = payload;
+}
+
+// Records a static jump whose destination op index is not yet known.
+static void emit_static_jump(Compiler *c, OpCode kind, const Token *t, LabelSym *target) {
+    size_t idx = emit_op(c, kind, t);
+    VEC_GROW(c->fix, c->fix_n, c->fix_cap, JumpFixup);
+    c->fix[c->fix_n].op_idx = idx;
+    c->fix[c->fix_n].map_idx = target->token_index - c->fn->body_start;
+    c->fix_n++;
+}
+
+// Parses the "@type" suffix of mread@/write@/read@ words at compile time.
+static TypeKind compile_type_suffix(const Token *t, const char *what) {
+    const char *at = strchr(t->text, '@');
+    if (!at || !at[1]) fatal_at(t->line, "%s requires type, e.g. %si64", what, t->text);
+    TypeKind ty;
+    if (!is_type_name(at + 1, &ty)) fatal_at(t->line, "unknown %s type '%s'", what, at + 1);
+    return ty;
+}
+
+static void compile_ref_or_deref(Compiler *c, const Token *t) {
+    const char *s = t->text;
+    if (s[0] == '&') {
+        const char *name = s + 1;
+        size_t idx = emit_op(c, OP_REF_NAME, t);
+        c->v[idx].u.name = xstrdup(name);
+        own_string(c, c->v[idx].u.name);
+        // First-class label/func fallbacks are fixed after discovery, so they
+        // can be resolved here instead of scanned at run time.
+        LabelSym *ls = vm_find_label(c->fn, name);
+        if (ls) c->v[idx].aux = (int64_t)(ls - c->fn->labels.v);
+        FuncSym *fs = vm_find_func(&c->vm->funcs, name);
+        if (fs) c->v[idx].aux2 = (int64_t)(fs - c->vm->funcs.v);
+        return;
+    }
+    // '*name'
+    size_t idx = emit_op(c, OP_DEREF_NAME, t);
+    c->v[idx].u.name = xstrdup(s + 1);
+    own_string(c, c->v[idx].u.name);
+}
+
+static void compile_word(Compiler *c, const Token *t) {
+    VM *vm = c->vm;
     const char *s = t->text;
 
-    if (word_is(s, "alloc") || word_is(s, "halloc")) {
-        Value n = valstack_pop(&vm->stack, s);
-        int64_t bytes = get_i64(vm, n, t);
-        if (bytes < 0) fatal_at(t->line, "negative allocation");
-        bool heap = word_is(s, "halloc");
-        uint64_t id = mem_new(&vm->mems, (size_t)bytes, heap, false);
-        if (!heap) frame_track_local_mem(fr, id);
-        valstack_push(&vm->stack, (Value){T_MEM, id});
-        return true;
+    // Label definitions are pure position markers.
+    size_t len = strlen(s);
+    if (len && s[len - 1] == ':') return;
+
+    LabelSym *ls = vm_find_label(c->fn, s);
+    if (ls) {
+        // A bare label word fuses with an immediately following jump;
+        // otherwise it still pushes a first-class label value.
+        if (c->pending_label >= 0) flush_pending_label(c);
+        c->pending_label = (int)(ls - c->fn->labels.v);
+        c->pending_tok = t;
+        return;
     }
 
-    if (word_is(s, "free")) {
-        Value m = valstack_pop(&vm->stack, s);
-        uint64_t id;
-        if (m.type == T_MEM) {
-            id = m.idx;
-        } else if (m.type == T_MEMPTR) {
-            if (m.idx >= vm->memptrs.n) fatal_at(t->line, "invalid memptr");
-            id = vm->memptrs.v[m.idx].mem_id;
-        } else {
-            fatal_at(t->line, "free expects mem/memptr, got %s", type_name(m.type));
+    // User definitions shadow builtin words, so the function table is
+    // consulted before any builtin classification -- same as the old
+    // interpreter's lookup order.
+    FuncSym *fs = vm_find_func(&vm->funcs, s);
+    if (fs) {
+        flush_pending_label(c);
+        size_t idx = emit_op(c, OP_CALL_FUNC, t);
+        c->v[idx].u.i = (int64_t)(fs - vm->funcs.v);
+        return;
+    }
+
+    bool is_jz = word_is(s, "jz"), is_jnz = word_is(s, "jnz");
+    bool is_jmp = word_is(s, "jmp") || word_is(s, "jump");
+    if ((is_jz || is_jnz || is_jmp) && c->pending_label >= 0) {
+        // Fuse: branch straight to the compiled position instead of pushing
+        // and popping a label value at run time.
+        LabelSym *target = &c->fn->labels.v[c->pending_label];
+        OpCode k = is_jmp ? OP_JMP : (is_jz ? OP_JZ : OP_JNZ);
+        emit_static_jump(c, k, t, target);
+        c->pending_label = -1;
+        c->pending_tok = NULL;
+        return;
+    }
+    flush_pending_label(c);
+
+    if (word_is(s, "ret")) { emit_op(c, OP_RET, t); return; }
+    if (word_is(s, "halt")) { emit_op(c, OP_HALT, t); return; }
+    if (word_is(s, "dup")) { emit_op(c, OP_DUP, t); return; }
+    if (word_is(s, "drop")) { emit_op(c, OP_DROP, t); return; }
+    if (word_is(s, "swap")) { emit_op(c, OP_SWAP, t); return; }
+
+    static const char *arith_words[] = {"+", "-", "*", "/", "%"};
+    for (int k = AR_ADD; k <= AR_MOD; ++k) {
+        if (word_is(s, arith_words[k])) {
+            size_t idx = emit_op(c, OP_ARITH, t);
+            c->v[idx].u.i = k;
+            return;
         }
-        if (id >= vm->mems.n || vm->mems.v[id].data == NULL)
-            fatal_at(t->line, "invalid or already freed mem id");
-        free(vm->mems.v[id].data);
-        vm->mems.v[id].data = NULL;
-        vm->mems.v[id].len = 0;
-        return true;
     }
+    static const char *cmp_words[] = {"==", "!=", "<", ">", "<=", ">="};
+    for (int k = CMP_EQ; k <= CMP_GE; ++k) {
+        if (word_is(s, cmp_words[k])) {
+            size_t idx = emit_op(c, OP_CMP, t);
+            c->v[idx].u.i = k;
+            return;
+        }
+    }
+
+    if (word_is(s, "=")) { emit_op(c, OP_ASSIGN, t); return; }
+    if (word_is(s, "call")) { emit_op(c, OP_CALL_IND, t); return; }
+    if (is_jz) { emit_op(c, OP_JZ_DYN, t); return; }
+    if (is_jnz) { emit_op(c, OP_JNZ_DYN, t); return; }
+    if (is_jmp) { emit_op(c, OP_JMP_DYN, t); return; }
 
     if (strncmp(s, "mread@", 6) == 0) {
-        Value off = valstack_pop(&vm->stack, "read offset");
-        Value memv = valstack_pop(&vm->stack, "read mem");
-        uint64_t mid = mem_id_of(vm, memv, t, "read");
-        TypeKind ty = token_read_type(t, "mread");
-        MemObj *m = require_mem(vm, mid, t);
-        size_t o = (size_t)get_i64(vm, off, t);
-        size_t sz;
-        switch (ty) {
-        case T_I64: case T_U64: case T_F64: sz = 8; break;
-        case T_BOOL: case T_CHAR: sz = 1; break;
-        default: fatal_at(t->line, "mread supports scalar types only, got %s", type_name(ty)); return true;
-        }
-        if (o + sz > m->len) fatal_at(t->line, "read out of bounds");
-        switch (ty) {
-        case T_I64: { int64_t x; memcpy(&x, m->data + o, 8); valstack_push(&vm->stack, make_i64(&vm->i64, x)); } break;
-        case T_U64: { uint64_t x; memcpy(&x, m->data + o, 8); valstack_push(&vm->stack, make_u64(&vm->u64, x)); } break;
-        case T_F64: { double x; memcpy(&x, m->data + o, 8); valstack_push(&vm->stack, make_f64(&vm->f64, x)); } break;
-        case T_BOOL: valstack_push(&vm->stack, make_bool(&vm->bytes, m->data[o] != 0)); break;
-        default: valstack_push(&vm->stack, make_char(&vm->bytes, m->data[o])); break;
-        }
-        return true;
+        size_t idx = emit_op(c, OP_MREAD, t);
+        c->v[idx].ty = compile_type_suffix(t, "mread");
+        return;
     }
-
     if (strncmp(s, "write@", 6) == 0) {
-        Value off = valstack_pop(&vm->stack, "write offset");
-        Value memv = valstack_pop(&vm->stack, "write mem");
-        Value val = valstack_pop(&vm->stack, "write value");
-        uint64_t mid = mem_id_of(vm, memv, t, "write");
-        TypeKind ty = token_read_type(t, "write");
-        if (val.type != ty) {
-            fatal_at(t->line, "write type mismatch: value is %s but write@%s requested",
-                     type_name(val.type), type_name(ty));
-        }
-        MemObj *m = require_mem(vm, mid, t);
-        if (m->readonly) fatal_at(t->line, "cannot write read-only memory");
-        size_t sz;
-        switch (ty) {
-        case T_I64: case T_U64: case T_F64: sz = 8; break;
-        case T_BOOL: case T_CHAR: sz = 1; break;
-        default: fatal_at(t->line, "write supports scalar types only, got %s", type_name(ty)); return true;
-        }
-        size_t o = (size_t)get_i64(vm, off, t);
-        if (o + sz > m->len) fatal_at(t->line, "write out of bounds");
-        switch (ty) {
-        case T_I64: memcpy(m->data + o, &vm->i64.v[val.idx], 8); break;
-        case T_U64: memcpy(m->data + o, &vm->u64.v[val.idx], 8); break;
-        case T_F64: memcpy(m->data + o, &vm->f64.v[val.idx], 8); break;
-        default: m->data[o] = vm->bytes.v[val.idx]; break;
-        }
-        return true;
+        size_t idx = emit_op(c, OP_WRITE, t);
+        c->v[idx].ty = compile_type_suffix(t, "write");
+        return;
+    }
+    if (strncmp(s, "read@", 5) == 0) {
+        size_t idx = emit_op(c, OP_READ, t);
+        c->v[idx].ty = compile_type_suffix(t, "read");
+        return;
     }
 
-    return false;
+    if (word_is(s, "alloc")) { emit_op(c, OP_ALLOC, t); return; }
+    if (word_is(s, "halloc")) {
+        size_t idx = emit_op(c, OP_HALLOC, t);
+        c->v[idx].has_ty = true; // heap-lifetime flag read by the handler
+        return;
+    }
+    if (word_is(s, "free")) { emit_op(c, OP_FREE, t); return; }
+
+    if (word_is(s, "print") || word_is(s, "printn")) { emit_op(c, OP_PRINT, t); return; }
+    if (word_is(s, "println")) { emit_op(c, OP_PRINTLN, t); return; }
+    if (word_is(s, "printstr")) { emit_op(c, OP_PRINTSTR, t); return; }
+    if (word_is(s, "assert")) { emit_op(c, OP_ASSERT, t); return; }
+
+    // Fallback: variable load or implicit declaration from the stack top.
+    char base[MAX_NAME];
+    bool has_ty = false;
+    TypeKind ann = T_I64;
+    split_annotated_name(s, base, sizeof(base), &has_ty, &ann);
+    if (!is_var_token(base)) fatal_at(t->line, "unknown token '%s'", s);
+    size_t idx = emit_op(c, OP_WORD_VAR, t);
+    c->v[idx].u.name = xstrdup(base);
+    own_string(c, c->v[idx].u.name);
+    c->v[idx].ty = ann;
+    c->v[idx].has_ty = has_ty;
 }
 
-static void do_stdin_read(VM *vm, const Token *t) {
-    TypeKind ty = token_read_type(t, "read");
+// Compiles one function body (or the whole top level) into threaded code.
+static void compile_func(VM *vm, FuncSym *fn) {
+    Compiler c = {0};
+    c.vm = vm;
+    c.fn = fn;
+    c.top_level = strcmp(fn->name, "<top>") == 0;
+    c.pending_label = -1;
+    c.map_n = fn->body_end - fn->body_start;
+    c.map = malloc((c.map_n ? c.map_n : 1) * sizeof *c.map);
+    if (!c.map) die_oom();
+    for (size_t i = 0; i < c.map_n; ++i) c.map[i] = SIZE_MAX;
+
+    size_t i = fn->body_start;
+    while (i < fn->body_end) {
+        Token *t = &vm->toks.v[i];
+        c.map[i - fn->body_start] = c.n;
+
+        switch (t->kind) {
+        case TOK_INT: {
+            flush_pending_label(&c);
+            size_t idx = emit_op(&c, OP_PUSH_I64, t);
+            c.v[idx].u.i = strtoll(t->text, NULL, 10);
+            ++i;
+            break;
+        }
+        case TOK_UINT: {
+            flush_pending_label(&c);
+            size_t idx = emit_op(&c, OP_PUSH_U64, t);
+            c.v[idx].u.u = strtoull(t->text + 2, NULL, 10);
+            ++i;
+            break;
+        }
+        case TOK_FLOAT: {
+            flush_pending_label(&c);
+            size_t idx = emit_op(&c, OP_PUSH_F64, t);
+            c.v[idx].u.d = strtod(t->text, NULL);
+            ++i;
+            break;
+        }
+        case TOK_STRING:
+            flush_pending_label(&c);
+            emit_const(&c, OP_PUSH_STR, t, compile_string_literal(vm, t));
+            ++i;
+            break;
+        case TOK_COLON:
+            // Registered definitions are skipped; their bodies compile
+            // separately through their own FuncSym.
+            flush_pending_label(&c);
+            if (c.top_level) {
+                while (i < fn->body_end && vm->toks.v[i].kind != TOK_SEMI) ++i;
+            }
+            ++i;
+            break;
+        case TOK_SEMI:
+            // End of a function definition body; a stray ';' at top level
+            // stopped execution in the old interpreter, so it stops here too.
+            ++i;
+            goto done;
+        case TOK_WORD:
+            if (t->text[0] == '&' || (t->text[0] == '*' && t->text[1])) {
+                flush_pending_label(&c);
+                compile_ref_or_deref(&c, t);
+            } else if (strncmp(t->text, "!@", 2) == 0) {
+                flush_pending_label(&c);
+                size_t idx = emit_op(&c, OP_CAST, t);
+                if (!is_type_name(t->text + 2, &c.v[idx].ty))
+                    fatal_at(t->line, "unknown cast type '%s'", t->text + 2);
+            } else {
+                compile_word(&c, t);
+            }
+            ++i;
+            break;
+        default: // TOK_PARAM_END, stray TOK_GLOBAL_REF
+            ++i;
+            break;
+        }
+    }
+done:
+    flush_pending_label(&c);
+
+    // Sentinel: jumps aimed past the last real instruction land here,
+    // mirroring the old "reached end of body" implicit return.
+    size_t sentinel = emit_op(&c, OP_RET, NULL);
+    for (size_t j = 0; j < c.fix_n; ++j) {
+        size_t d = c.map[c.fix[j].map_idx];
+        c.v[c.fix[j].op_idx].u.u = (d == SIZE_MAX) ? sentinel : d;
+    }
+    for (size_t j = 0; j < c.map_n; ++j) {
+        if (c.map[j] == SIZE_MAX) c.map[j] = sentinel;
+    }
+
+    fn->code = c.v;
+    fn->code_n = c.n;
+    fn->code_map = c.map;
+    fn->map_n = c.map_n;
+    fn->compiled = true;
+}
+
+// The dispatch table maps OpCode -> &&label. It is filled on the first entry
+// into execute_code() because label addresses are only visible there; the
+// compiler (which only ever runs after that point) reads it back.
+static void **g_disp;
+static bool g_disp_ready;
+
+static void **tcode_dispatch_table(void) { return g_disp; }
+
+static void do_stdin_read(VM *vm, TypeKind ty, size_t line, const char *text) {
     switch (ty) {
     case T_I64: {
         int64_t x;
-        if (scanf("%" SCNd64, &x) != 1) fatal_at(t->line, "failed to read i64");
+        if (scanf("%" SCNd64, &x) != 1) fatal_at(line, "failed to read i64");
         valstack_push(&vm->stack, make_i64(&vm->i64, x));
         break;
     }
     case T_U64: {
         uint64_t x;
-        if (scanf("%" SCNu64, &x) != 1) fatal_at(t->line, "failed to read u64");
+        if (scanf("%" SCNu64, &x) != 1) fatal_at(line, "failed to read u64");
         valstack_push(&vm->stack, make_u64(&vm->u64, x));
         break;
     }
     case T_F64: {
         double x;
-        if (scanf("%lf", &x) != 1) fatal_at(t->line, "failed to read f64");
+        if (scanf("%lf", &x) != 1) fatal_at(line, "failed to read f64");
         valstack_push(&vm->stack, make_f64(&vm->f64, x));
         break;
     }
     case T_CHAR: {
-        unsigned char c;
-        if (scanf(" %c", &c) != 1) fatal_at(t->line, "failed to read char");
-        valstack_push(&vm->stack, make_char(&vm->bytes, c));
+        unsigned char ch;
+        if (scanf(" %c", &ch) != 1) fatal_at(line, "failed to read char");
+        valstack_push(&vm->stack, make_char(&vm->bytes, ch));
         break;
     }
     case T_BOOL: {
         char buf[64];
-        if (scanf("%63s", buf) != 1) fatal_at(t->line, "failed to read bool");
+        if (scanf("%63s", buf) != 1) fatal_at(line, "failed to read bool");
         if (word_is(buf, "true") || word_is(buf, "1")) {
             valstack_push(&vm->stack, make_bool(&vm->bytes, true));
         } else if (word_is(buf, "false") || word_is(buf, "0")) {
             valstack_push(&vm->stack, make_bool(&vm->bytes, false));
         } else {
-            fatal_at(t->line, "invalid bool input '%s'", buf);
+            fatal_at(line, "invalid bool input '%s'", buf);
         }
         break;
     }
     default:
-        fatal_at(t->line, "read@%s is not supported by the MVP input module", strchr(t->text, '@') + 1);
+        fatal_at(line, "read@%s is not supported by the MVP input module",
+                 strchr(text, '@') + 1);
     }
 }
 
-static bool op_io(VM *vm, const Token *t) {
-    const char *s = t->text;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
 
-    if (strncmp(s, "read@", 5) == 0) {
-        do_stdin_read(vm, t);
-        return true;
+static void execute_code(VM *vm, FuncSym *fn) {
+    if (!g_disp_ready) {
+        static void *disp[OP_COUNT];
+        disp[OP_PUSH_I64] = &&L_PUSH_I64;
+        disp[OP_PUSH_U64] = &&L_PUSH_U64;
+        disp[OP_PUSH_F64] = &&L_PUSH_F64;
+        disp[OP_PUSH_STR] = &&L_PUSH_STR;
+        disp[OP_PUSH_LABEL] = &&L_PUSH_LABEL;
+        disp[OP_PUSH_FUNC] = &&L_PUSH_FUNC;
+        disp[OP_WORD_VAR] = &&L_WORD_VAR;
+        disp[OP_REF_NAME] = &&L_REF_NAME;
+        disp[OP_DEREF_NAME] = &&L_DEREF_NAME;
+        disp[OP_CAST] = &&L_CAST;
+        disp[OP_ARITH] = &&L_ARITH;
+        disp[OP_CMP] = &&L_CMP;
+        disp[OP_ASSIGN] = &&L_ASSIGN;
+        disp[OP_ALLOC] = &&L_ALLOC;
+        disp[OP_HALLOC] = &&L_HALLOC;
+        disp[OP_FREE] = &&L_FREE;
+        disp[OP_MREAD] = &&L_MREAD;
+        disp[OP_WRITE] = &&L_WRITE;
+        disp[OP_PRINT] = &&L_PRINT;
+        disp[OP_PRINTLN] = &&L_PRINTLN;
+        disp[OP_PRINTSTR] = &&L_PRINTSTR;
+        disp[OP_READ] = &&L_READ;
+        disp[OP_DUP] = &&L_DUP;
+        disp[OP_DROP] = &&L_DROP;
+        disp[OP_SWAP] = &&L_SWAP;
+        disp[OP_ASSERT] = &&L_ASSERT;
+        disp[OP_CALL_FUNC] = &&L_CALL_FUNC;
+        disp[OP_CALL_IND] = &&L_CALL_IND;
+        disp[OP_JMP] = &&L_JMP;
+        disp[OP_JZ] = &&L_JZ;
+        disp[OP_JNZ] = &&L_JNZ;
+        disp[OP_JMP_DYN] = &&L_JMP_DYN;
+        disp[OP_JZ_DYN] = &&L_JZ_DYN;
+        disp[OP_JNZ_DYN] = &&L_JNZ_DYN;
+        disp[OP_RET] = &&L_RET;
+        disp[OP_HALT] = &&L_HALT;
+        g_disp = disp;
+        g_disp_ready = true;
     }
-    if (word_is(s, "print") || word_is(s, "printn")) {
-        print_value(vm, valstack_pop(&vm->stack, s));
-        return true;
-    }
-    if (word_is(s, "println")) {
-        putchar('\n');
-        return true;
-    }
-    if (word_is(s, "printstr")) {
-        Value v = valstack_pop(&vm->stack, s);
-        uint64_t mid = mem_id_of(vm, v, t, "printstr");
-        MemObj *m = require_mem(vm, mid, t);
-        for (size_t k = 0; k < m->len && m->data[k]; ++k) putchar((char)m->data[k]);
-        return true;
-    }
-    return false;
-}
+    if (!fn->compiled) compile_func(vm, fn);
 
-static bool op_jump(VM *vm, Frame *fr, FuncSym *fn, const Token *t) {
-    const char *s = t->text;
-    if (!word_is(s, "jz") && !word_is(s, "jnz") &&
-        !word_is(s, "jmp") && !word_is(s, "jump")) {
-        return false;
-    }
+    ValStack *st = &vm->stack;
+    const Op *code = fn->code;
+    const Op *ip = code - 1;
 
-    Value target = valstack_pop(&vm->stack, s);
-    if (target.type != T_LABEL)
-        fatal_at(t->line, "%s expects label, got %s", s, type_name(target.type));
-    if (target.idx >= fn->labels.n) fatal_at(t->line, "invalid label id");
+#define NEXT() goto *(++ip)->code
+#define JUMP_TO(idx)               \
+    do {                           \
+        ip = code + (size_t)(idx); \
+        goto *ip->code;            \
+    } while (0)
 
-    if (word_is(s, "jz") || word_is(s, "jnz")) {
-        Value cond = valstack_pop(&vm->stack, s);
-        bool c = is_true(vm, cond, t);
-        // Assembly convention: jz jumps on zero/false, jnz on non-zero/true.
-        if (word_is(s, "jz") ? c : !c) return true;
-    }
-    fr->pc = fn->labels.v[target.idx].token_index;
-    return true;
-}
+    NEXT();
 
-// Pushes a first-class label or func reference for '&name'-style lookups.
-static bool try_push_named_ref(VM *vm, FuncSym *fn, const char *name) {
-    LabelSym *ls = vm_find_label(fn, name);
-    if (ls) {
-        valstack_push(&vm->stack, (Value){T_LABEL, (uint64_t)(ls - fn->labels.v)});
-        return true;
-    }
-    FuncSym *ff = vm_find_func(&vm->funcs, name);
-    if (ff) {
-        valstack_push(&vm->stack, (Value){T_FUNC, (uint64_t)(ff - vm->funcs.v)});
-        return true;
-    }
-    return false;
-}
+L_PUSH_I64:
+    valstack_push(st, make_i64(&vm->i64, ip->u.i));
+    NEXT();
+L_PUSH_U64:
+    valstack_push(st, make_u64(&vm->u64, ip->u.u));
+    NEXT();
+L_PUSH_F64:
+    valstack_push(st, make_f64(&vm->f64, ip->u.d));
+    NEXT();
+L_PUSH_STR:
+    valstack_push(st, (Value){T_MEMPTR, memptr_new(&vm->memptrs, ip->u.u)});
+    NEXT();
+L_PUSH_LABEL:
+    valstack_push(st, (Value){T_LABEL, ip->u.u});
+    NEXT();
+L_PUSH_FUNC:
+    valstack_push(st, (Value){T_FUNC, ip->u.u});
+    NEXT();
 
-static void declare_variable(VM *vm, Frame *fr, const char *base, TypeKind ty,
-                             Value init, const Token *t) {
-    if (is_top_level(fr)) {
-        if (vm_find_var(&vm->globals, base))
-            fatal_at(t->line, "global variable '%s' already exists", base);
-        vm_add_var(&vm->globals, base, ty, true, init);
-    } else {
-        if (vm_find_var(&vm->globals, base))
-            fatal_at(t->line, "local variable '%s' conflicts with global variable", base);
-        vm_add_var(&fr->locals, base, ty, true, init);
-    }
-}
-
-// Fallback for plain words: load an existing variable or implicitly declare
-// one by consuming the stack top.
-static void handle_variable_word(VM *vm, Frame *fr, const Token *t) {
-    const char *s = t->text;
-    char base[MAX_NAME];
-    bool has_ty = false;
-    TypeKind ann = T_I64;
-    split_annotated_name(s, base, sizeof(base), &has_ty, &ann);
-
-    if (!is_var_token(base)) fatal_at(t->line, "unknown token '%s'", s);
-
+L_WORD_VAR: {
+    // Plain word: load an existing variable, or implicitly declare one by
+    // consuming the stack top. Existence stays a run-time property.
+    const char *base = ip->u.name;
+    Frame *fr = current_frame(vm);
     bool unused = false;
     Var *v = resolve_var(vm, fr, base, &unused);
     if (v) {
-        if (has_ty && v->type != ann)
-            fatal_at(t->line, "variable '%s' already has type %s, not %s",
-                     base, type_name(v->type), type_name(ann));
-        require_initialized(v, base, t);
-        valstack_push(&vm->stack, v->value);
-        return;
+        if (ip->has_ty && v->type != ip->ty)
+            fatal_at(ip->line, "variable '%s' already has type %s, not %s",
+                     base, type_name(v->type), type_name(ip->ty));
+        require_initialized(v, base, ip->line);
+        valstack_push(st, v->value);
+        NEXT();
     }
-
     if (global_declared_in(fr, base))
-        fatal_at(t->line, "declared global variable '%s' does not exist", base);
-
-    Value init = valstack_pop(&vm->stack, s);
-    TypeKind ty = has_ty ? ann : init.type;
+        fatal_at(ip->line, "declared global variable '%s' does not exist", base);
+    Value init = valstack_pop(st, ip->text);
+    TypeKind ty = ip->has_ty ? ip->ty : init.type;
     if (ty != init.type) {
-        fatal_at(t->line, "initializer type %s does not match declared type %s",
+        fatal_at(ip->line, "initializer type %s does not match declared type %s",
                  type_name(init.type), type_name(ty));
     }
-    declare_variable(vm, fr, base, ty, init, t);
+    declare_variable(vm, fr, base, ty, init, ip->line);
+    NEXT();
 }
 
-static void execute_function(VM *vm, FuncSym *fn) {
-    const size_t frame_id = vm->frames.n - 1;
-    while (!vm->halted) {
-        // Re-fetch the frame every iteration: nested calls may realloc the vector.
-        Frame *fr = &vm->frames.v[frame_id];
-        if (fr->pc >= fn->body_end) break;
-
-        size_t ip = fr->pc++;
-        Token *t = &vm->toks.v[ip];
-
-        if (t->kind == TOK_SEMI) return; // implicit ret
-        if (t->kind == TOK_PARAM_END) continue;
-
-        if (t->kind == TOK_COLON && is_top_level(fr)) {
-            // Function bodies are skipped during top-level execution.
-            size_t j = ip + 1;
-            while (j < fn->body_end && vm->toks.v[j].kind != TOK_SEMI) ++j;
-            if (j >= fn->body_end) fatal_at(t->line, "unterminated function definition");
-            fr->pc = j + 1;
-            continue;
+L_REF_NAME: {
+    const char *name = ip->u.name;
+    bool g = false;
+    Var *vv = resolve_var(vm, current_frame(vm), name, &g);
+    if (vv) {
+        if (vv->type == T_MEM) {
+            // MVP: &mem yields a memptr to the memory object stored there.
+            require_initialized(vv, name, ip->line);
+            if (vv->value.type != T_MEM)
+                fatal_at(ip->line, "internal mem variable type error");
+            valstack_push(st, (Value){T_MEMPTR, memptr_new(&vm->memptrs, vv->value.idx)});
+        } else {
+            valstack_push(st, make_ptr_value(vm, current_frame(vm), name, ip->line));
         }
-
-        bool literal = t->kind == TOK_INT || t->kind == TOK_UINT ||
-                       t->kind == TOK_FLOAT || t->kind == TOK_STRING;
-        if (!literal && t->kind != TOK_WORD) continue;
-        if (literal) {
-            valstack_push(&vm->stack, parse_literal(vm, t));
-            continue;
-        }
-
-        const char *s = t->text;
-        size_t len = strlen(s);
-        if (len > 0 && s[len - 1] == ':') continue; // label definition
-
-        if (s[0] == '&') {
-            const char *name = s + 1;
-            bool g = false;
-            Var *vv = resolve_var(vm, fr, name, &g);
-            if (vv) {
-                if (vv->type == T_MEM) {
-                    // MVP: &mem yields a memptr to the memory object stored in that variable.
-                    require_initialized(vv, name, t);
-                    if (vv->value.type != T_MEM)
-                        fatal_at(t->line, "internal mem variable type error");
-                    valstack_push(&vm->stack,
-                                  (Value){T_MEMPTR, memptr_new(&vm->memptrs, vv->value.idx)});
-                } else {
-                    valstack_push(&vm->stack, make_ptr_value(vm, fr, name, t));
-                }
-                continue;
-            }
-            if (try_push_named_ref(vm, fn, name)) continue;
-            fatal_at(t->line, "unknown reference '&%s'", name);
-        }
-
-        if (s[0] == '*' && s[1]) {
-            Value pv = load_var(vm, fr, s + 1, t);
-            Var *target = ptr_target(vm, pv, t);
-            if (!target->initialized)
-                fatal_at(t->line, "dereferenced uninitialized pointer '%s'", s + 1);
-            valstack_push(&vm->stack, target->value);
-            continue;
-        }
-
-        if (strncmp(s, "!@", 2) == 0) {
-            TypeKind ty;
-            if (!is_type_name(s + 2, &ty)) fatal_at(t->line, "unknown cast type '%s'", s + 2);
-            Value v = valstack_pop(&vm->stack, s);
-            valstack_push(&vm->stack, cast_value(vm, v, ty, t));
-            continue;
-        }
-
-        // Bare label names and function names are looked up before builtins,
-        // so user definitions shadow builtin words.
-        LabelSym *ls = vm_find_label(fn, s);
-        if (ls) {
-            valstack_push(&vm->stack, (Value){T_LABEL, (uint64_t)(ls - fn->labels.v)});
-            continue;
-        }
-        FuncSym *callee = vm_find_func(&vm->funcs, s);
-        if (callee) {
-            call_by_value(vm, callee, t);
-            continue;
-        }
-
-        if (word_is(s, "ret")) return;
-        if (word_is(s, "halt")) { vm->halted = true; return; }
-
-        if (word_is(s, "dup")) {
-            valstack_push(&vm->stack, valstack_peek(&vm->stack, s));
-            continue;
-        }
-        if (word_is(s, "drop")) {
-            (void)valstack_pop(&vm->stack, s);
-            continue;
-        }
-        if (word_is(s, "swap")) {
-            Value a = valstack_pop(&vm->stack, s);
-            Value b = valstack_pop(&vm->stack, s);
-            valstack_push(&vm->stack, a);
-            valstack_push(&vm->stack, b);
-            continue;
-        }
-
-        if (op_arithmetic(vm, t)) continue;
-        if (op_comparison(vm, t)) continue;
-
-        if (word_is(s, "=")) {
-            Value pv = valstack_pop(&vm->stack, s);
-            Value val = valstack_pop(&vm->stack, s);
-            assign_var(ptr_target(vm, pv, t), val, t);
-            continue;
-        }
-
-        if (word_is(s, "call")) {
-            Value fv = valstack_pop(&vm->stack, s);
-            if (fv.type != T_FUNC)
-                fatal_at(t->line, "call expects func, got %s", type_name(fv.type));
-            if (fv.idx >= vm->funcs.n) fatal_at(t->line, "invalid func id");
-            call_by_value(vm, &vm->funcs.v[fv.idx], t);
-            continue;
-        }
-
-        if (op_jump(vm, fr, fn, t)) continue;
-        if (op_memory(vm, fr, t)) continue;
-        if (op_io(vm, t)) continue;
-
-        if (word_is(s, "assert")) {
-            Value v = valstack_pop(&vm->stack, s);
-            if (!is_true(vm, v, t)) fatal_at(t->line, "assertion failed");
-            continue;
-        }
-
-        handle_variable_word(vm, fr, t);
+        NEXT();
     }
+    if (ip->aux >= 0) {
+        valstack_push(st, (Value){T_LABEL, (uint64_t)ip->aux});
+        NEXT();
+    }
+    if (ip->aux2 >= 0) {
+        valstack_push(st, (Value){T_FUNC, (uint64_t)ip->aux2});
+        NEXT();
+    }
+    fatal_at(ip->line, "unknown reference '&%s'", name);
+}
+
+L_DEREF_NAME: {
+    Value pv = load_var(vm, current_frame(vm), ip->u.name, ip->line);
+    Var *target = ptr_target(vm, pv, ip->line);
+    if (!target->initialized)
+        fatal_at(ip->line, "dereferenced uninitialized pointer '%s'", ip->u.name);
+    valstack_push(st, target->value);
+    NEXT();
+}
+
+L_CAST: {
+    Value v = valstack_pop(st, ip->text);
+    valstack_push(st, cast_value(vm, v, ip->ty, ip->line));
+    NEXT();
+}
+
+L_ARITH: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    int k = (int)ip->u.i;
+    if (a.type == T_F64 || b.type == T_F64) {
+        double x = value_to_f64(vm, a, ip->line);
+        double y = value_to_f64(vm, b, ip->line);
+        double r = 0;
+        switch (k) {
+        case AR_ADD: r = x + y; break;
+        case AR_SUB: r = x - y; break;
+        case AR_MUL: r = x * y; break;
+        case AR_DIV: r = x / y; break;
+        default: fatal_at(ip->line, "%% is not defined for f64");
+        }
+        valstack_push(st, make_f64(&vm->f64, r));
+        NEXT();
+    }
+    int64_t x = get_i64(vm, a, ip->line);
+    int64_t y = get_i64(vm, b, ip->line);
+    int64_t r = 0;
+    switch (k) {
+    case AR_ADD: r = x + y; break;
+    case AR_SUB: r = x - y; break;
+    case AR_MUL: r = x * y; break;
+    case AR_DIV:
+        if (!y) fatal_at(ip->line, "division by zero");
+        r = x / y;
+        break;
+    default:
+        if (!y) fatal_at(ip->line, "division by zero");
+        r = x % y;
+        break;
+    }
+    valstack_push(st, make_i64(&vm->i64, r));
+    NEXT();
+}
+
+#define CMP_RESULT(x, y)                                                       \
+    (k == CMP_EQ ? (x) == (y)                                                  \
+     : k == CMP_NE ? (x) != (y)                                                \
+     : k == CMP_LT ? (x) < (y)                                                 \
+     : k == CMP_GT ? (x) > (y)                                                 \
+     : k == CMP_LE ? (x) <= (y)                                                \
+                   : (x) >= (y))
+
+L_CMP: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    int k = (int)ip->u.i;
+    bool r;
+    if (a.type == T_I64 && b.type == T_I64) {
+        r = CMP_RESULT(vm->i64.v[a.idx], vm->i64.v[b.idx]);
+    } else if (a.type == T_F64 && b.type == T_F64) {
+        r = CMP_RESULT(vm->f64.v[a.idx], vm->f64.v[b.idx]);
+    } else {
+        fatal_at(ip->line, "comparison requires equal scalar types, got %s",
+                 type_name(a.type));
+    }
+    valstack_push(st, make_bool(&vm->bytes, r));
+    NEXT();
+}
+
+#undef CMP_RESULT
+
+L_ASSIGN: {
+    Value pv = valstack_pop(st, ip->text);
+    Value val = valstack_pop(st, ip->text);
+    assign_var(ptr_target(vm, pv, ip->line), val, ip->line);
+    NEXT();
+}
+
+L_ALLOC:
+L_HALLOC: {
+    bool heap = ip->has_ty; // set at compile time for halloc
+    Value n = valstack_pop(st, ip->text);
+    int64_t bytes = get_i64(vm, n, ip->line);
+    if (bytes < 0) fatal_at(ip->line, "negative allocation");
+    uint64_t id = mem_new(&vm->mems, (size_t)bytes, heap, false);
+    if (!heap) frame_track_local_mem(current_frame(vm), id);
+    valstack_push(st, (Value){T_MEM, id});
+    NEXT();
+}
+
+L_FREE: {
+    Value m = valstack_pop(st, ip->text);
+    uint64_t id;
+    if (m.type == T_MEM) {
+        id = m.idx;
+    } else if (m.type == T_MEMPTR) {
+        if (m.idx >= vm->memptrs.n) fatal_at(ip->line, "invalid memptr");
+        id = vm->memptrs.v[m.idx].mem_id;
+    } else {
+        fatal_at(ip->line, "free expects mem/memptr, got %s", type_name(m.type));
+    }
+    if (id >= vm->mems.n || vm->mems.v[id].data == NULL)
+        fatal_at(ip->line, "invalid or already freed mem id");
+    free(vm->mems.v[id].data);
+    vm->mems.v[id].data = NULL;
+    vm->mems.v[id].len = 0;
+    NEXT();
+}
+
+L_MREAD: {
+    Value off = valstack_pop(st, "read offset");
+    Value memv = valstack_pop(st, "read mem");
+    uint64_t mid = mem_id_of(vm, memv, ip->line, "read");
+    MemObj *m = require_mem(vm, mid, ip->line);
+    TypeKind ty = ip->ty;
+    size_t o = (size_t)get_i64(vm, off, ip->line);
+    size_t sz;
+    switch (ty) {
+    case T_I64: case T_U64: case T_F64: sz = 8; break;
+    case T_BOOL: case T_CHAR: sz = 1; break;
+    default: fatal_at(ip->line, "mread supports scalar types only, got %s", type_name(ty));
+    }
+    if (o + sz > m->len) fatal_at(ip->line, "read out of bounds");
+    switch (ty) {
+    case T_I64: { int64_t x; memcpy(&x, m->data + o, 8); valstack_push(st, make_i64(&vm->i64, x)); } break;
+    case T_U64: { uint64_t x; memcpy(&x, m->data + o, 8); valstack_push(st, make_u64(&vm->u64, x)); } break;
+    case T_F64: { double x; memcpy(&x, m->data + o, 8); valstack_push(st, make_f64(&vm->f64, x)); } break;
+    case T_BOOL: valstack_push(st, make_bool(&vm->bytes, m->data[o] != 0)); break;
+    default: valstack_push(st, make_char(&vm->bytes, m->data[o])); break;
+    }
+    NEXT();
+}
+
+L_WRITE: {
+    Value off = valstack_pop(st, "write offset");
+    Value memv = valstack_pop(st, "write mem");
+    Value val = valstack_pop(st, "write value");
+    uint64_t mid = mem_id_of(vm, memv, ip->line, "write");
+    TypeKind ty = ip->ty;
+    if (val.type != ty) {
+        fatal_at(ip->line, "write type mismatch: value is %s but write@%s requested",
+                 type_name(val.type), type_name(ty));
+    }
+    MemObj *m = require_mem(vm, mid, ip->line);
+    if (m->readonly) fatal_at(ip->line, "cannot write read-only memory");
+    size_t sz;
+    switch (ty) {
+    case T_I64: case T_U64: case T_F64: sz = 8; break;
+    case T_BOOL: case T_CHAR: sz = 1; break;
+    default: fatal_at(ip->line, "write supports scalar types only, got %s", type_name(ty));
+    }
+    size_t o = (size_t)get_i64(vm, off, ip->line);
+    if (o + sz > m->len) fatal_at(ip->line, "write out of bounds");
+    switch (ty) {
+    case T_I64: memcpy(m->data + o, &vm->i64.v[val.idx], 8); break;
+    case T_U64: memcpy(m->data + o, &vm->u64.v[val.idx], 8); break;
+    case T_F64: memcpy(m->data + o, &vm->f64.v[val.idx], 8); break;
+    default: m->data[o] = vm->bytes.v[val.idx]; break;
+    }
+    NEXT();
+}
+
+L_PRINT:
+    print_value(vm, valstack_pop(st, ip->text));
+    NEXT();
+L_PRINTLN:
+    putchar('\n');
+    NEXT();
+L_PRINTSTR: {
+    Value v = valstack_pop(st, ip->text);
+    uint64_t mid = mem_id_of(vm, v, ip->line, "printstr");
+    MemObj *m = require_mem(vm, mid, ip->line);
+    for (size_t k = 0; k < m->len && m->data[k]; ++k) putchar((char)m->data[k]);
+    NEXT();
+}
+
+L_READ:
+    do_stdin_read(vm, ip->ty, ip->line, ip->text);
+    NEXT();
+
+L_DUP:
+    valstack_push(st, valstack_peek(st, ip->text));
+    NEXT();
+L_DROP:
+    (void)valstack_pop(st, ip->text);
+    NEXT();
+L_SWAP: {
+    Value a = valstack_pop(st, ip->text);
+    Value b = valstack_pop(st, ip->text);
+    valstack_push(st, a);
+    valstack_push(st, b);
+    NEXT();
+}
+
+L_ASSERT: {
+    Value v = valstack_pop(st, ip->text);
+    if (!is_true(vm, v, ip->line)) fatal_at(ip->line, "assertion failed");
+    NEXT();
+}
+
+L_CALL_FUNC:
+    call_by_value(vm, &vm->funcs.v[ip->u.i], ip->line, ip->text);
+    if (vm->halted) return;
+    NEXT();
+
+L_CALL_IND: {
+    Value fv = valstack_pop(st, ip->text);
+    if (fv.type != T_FUNC)
+        fatal_at(ip->line, "call expects func, got %s", type_name(fv.type));
+    if (fv.idx >= vm->funcs.n) fatal_at(ip->line, "invalid func id");
+    call_by_value(vm, &vm->funcs.v[fv.idx], ip->line, ip->text);
+    if (vm->halted) return;
+    NEXT();
+}
+
+L_JMP:
+    JUMP_TO(ip->u.u);
+
+L_JZ:
+    // Assembly convention: jz branches on zero/false.
+    if (is_true(vm, valstack_pop(st, ip->text), ip->line)) NEXT();
+    JUMP_TO(ip->u.u);
+
+L_JNZ:
+    // ...and jnz branches on non-zero/true.
+    if (!is_true(vm, valstack_pop(st, ip->text), ip->line)) NEXT();
+    JUMP_TO(ip->u.u);
+
+// Dynamic variants take the target as a first-class label stack value.
+
+L_JMP_DYN: {
+    Value target = valstack_pop(st, ip->text);
+    if (target.type != T_LABEL)
+        fatal_at(ip->line, "%s expects label, got %s", ip->text, type_name(target.type));
+    if (target.idx >= fn->labels.n) fatal_at(ip->line, "invalid label id");
+    JUMP_TO(fn->code_map[fn->labels.v[target.idx].token_index - fn->body_start]);
+}
+
+L_JZ_DYN: {
+    Value target = valstack_pop(st, ip->text);
+    if (target.type != T_LABEL)
+        fatal_at(ip->line, "%s expects label, got %s", ip->text, type_name(target.type));
+    if (target.idx >= fn->labels.n) fatal_at(ip->line, "invalid label id");
+    if (is_true(vm, valstack_pop(st, ip->text), ip->line)) NEXT();
+    JUMP_TO(fn->code_map[fn->labels.v[target.idx].token_index - fn->body_start]);
+}
+
+L_JNZ_DYN: {
+    Value target = valstack_pop(st, ip->text);
+    if (target.type != T_LABEL)
+        fatal_at(ip->line, "%s expects label, got %s", ip->text, type_name(target.type));
+    if (target.idx >= fn->labels.n) fatal_at(ip->line, "invalid label id");
+    if (!is_true(vm, valstack_pop(st, ip->text), ip->line)) NEXT();
+    JUMP_TO(fn->code_map[fn->labels.v[target.idx].token_index - fn->body_start]);
+}
+
+L_RET:
+    return;
+
+L_HALT:
+    vm->halted = true;
+    return;
+
+#undef NEXT
+#undef JUMP_TO
+}
+
+#pragma GCC diagnostic pop
+
+// Releases compiled code owned by a FuncSym (used for the synthetic <top>).
+static void tcode_free_sym(FuncSym *fn) {
+    free(fn->code);
+    free(fn->code_map);
+    for (size_t i = 0; i < fn->owned_n; ++i) free(fn->owned[i]);
+    free(fn->owned);
+    fn->code = NULL;
+    fn->code_map = NULL;
+    fn->owned = NULL;
+    fn->owned_n = fn->owned_cap = 0;
+    fn->compiled = false;
 }
 
 void vm_run_top_level(VM *vm) {
@@ -768,16 +1144,17 @@ void vm_run_top_level(VM *vm) {
     Frame *fr = &vm->frames.v[vm->frames.n];
     *fr = (Frame){0};
     fr->fn = &top;
-    fr->pc = 0;
     fr->frame_id = vm->frames.n;
     const size_t frame_id = vm->frames.n;
     vm->frames.n++;
 
-    execute_function(vm, &top);
+    execute_code(vm, &top);
 
     vm->frames.n = frame_id;
     frame_release_local_mem(vm, &vm->frames.v[frame_id]);
     frame_release_locals(&vm->frames.v[frame_id]);
+
+    tcode_free_sym(&top);
     for (size_t i = 0; i < top.labels.n; ++i) free(top.labels.v[i].name);
     free(top.labels.v);
     free(top.name);
@@ -805,6 +1182,7 @@ void vm_free(VM *vm) {
         free(f->globals);
         for (size_t j = 0; j < f->labels.n; ++j) free(f->labels.v[j].name);
         free(f->labels.v);
+        tcode_free_sym(f);
     }
     free(vm->funcs.v);
     free(vm->stack.v);
