@@ -1,9 +1,13 @@
 // MAD N-Queens
 // Input: N
 // Output: every solution as an N*N matrix, then the solution count.
+//
+// ( ) 是纯分组符号：解释器把它们当作空白，不产生任何语义。
+// 这里用括号把"属于同一个值/同一个动作"的词圈在一起，
+// 让每行读起来像一两条语句，而不是一堆平铺的操作码。
 
 read@i64 n@i64
-n 8 * alloc board
+(n 8 *) alloc board
 0 solutions
 
 :{n board}print_solution
@@ -12,14 +16,14 @@ n 8 * alloc board
     0 cell@i64
 
 print_rows:
-    r n >= print_done jnz
+    (r n >=) print_done jnz          // if (r >= n) goto print_done
     0 &c =
 
 print_cols:
-    c n >= print_row_done jnz
+    (c n >=) print_row_done jnz      // if (c >= n) goto print_row_done
 
-    board r 8 * mread@i64 &cell =
-    cell c == print_queen jnz
+    (board (r 8 *) mread@i64) &cell =    // cell = board[r]
+    (cell c ==) print_queen jnz      // if (cell == c) goto print_queen
 
     "." printstr
     print_next jmp
@@ -28,12 +32,12 @@ print_queen:
     "Q" printstr
 
 print_next:
-    c 1 + &c =
+    (c 1 +) &c =
     print_cols jmp
 
 print_row_done:
     println
-    r 1 + &r =
+    (r 1 +) &r =
     print_rows jmp
 
 print_done:
@@ -48,52 +52,52 @@ print_done:
     0 dr@i64
     0 dc@i64
 
-    row n == found_solution jnz
+    (row n ==) found_solution jnz    // if (row == n) goto found_solution
 
 try_col:
-    col n >= solve_done jnz
+    (col n >=) solve_done jnz        // if (col >= n) goto solve_done
     0 &k =
 
 check_previous:
-    k row >= place_queen jnz
+    (k row >=) place_queen jnz       // if (k >= row) goto place_queen
 
-    board k 8 * mread@i64 &prev =
+    (board (k 8 *) mread@i64) &prev =    // prev = board[k]
 
-    // 同一列
-    prev col == reject_col jnz
+    // 同一列冲突？
+    (prev col ==) reject_col jnz
 
-    // |col - prev| == row - k
-    row k - &dr =
-    col prev - &dc =
-    dc dr == reject_col jnz
-    prev col - &dc =
-    dc dr == reject_col jnz
+    // 对角线冲突：|col - prev| == row - k
+    (row k -) &dr =
+    (col prev -) &dc =
+    (dc dr ==) reject_col jnz
+    (prev col -) &dc =
+    (dc dr ==) reject_col jnz
 
-    k 1 + &k =
+    (k 1 +) &k =
     check_previous jmp
 
 place_queen:
-    col board row 8 * write@i64
+    (col board (row 8 *)) write@i64      // board[row] = col
 
-    row 1 + solve
+    (row 1 +) solve                      // solve(row + 1)
     try_next jmp
 
 reject_col:
     try_next jmp
 
 try_next:
-    col 1 + &col =
+    (col 1 +) &col =
     try_col jmp
 
 found_solution:
-    solutions 1 + &solutions =
+    (solutions 1 +) &solutions =
     print_solution
 
 solve_done:
     ret
 ;
 
-0 solve
+0 solve                                 // solve(0)
 
 solutions print
 println

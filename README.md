@@ -72,6 +72,10 @@ a b + c *
 (a b +) c *
 ```
 
+The examples use them as visual grouping: each line wraps the operands of one
+action in `( )`, so postfix code reads as a few short statements per line
+instead of flat token soup. See `examples/` for the convention.
+
 ### Variables
 
 ```text
@@ -130,9 +134,9 @@ Example:
 
 ```text
 :countdown [n@i64]
-    n 0 == done jnz
+    (n 0 ==) done jnz
     n print println
-    n 1 - countdown
+    (n 1 -) countdown
     ret
 done:
 ;
@@ -196,6 +200,16 @@ The language design additionally reserves the smaller integer widths and `f32`; 
 
 `alloc` creates frame-lifetime memory and is released when the current function returns. `halloc` creates heap-lifetime memory and remains until `free` or program shutdown.
 
+## Examples
+
+Runnable programs live in `examples/` and are documented in
+[`examples/README.md`](examples/README.md):
+
+- `examples/nqueens.mad` — N-Queens solver: recursion, `mem` arrays, label-based control flow
+- `examples/p1038.mad` — 洛谷 P1038 [NOIP 2003 提高组] 神经网络: flat i64 arrays in `mem`, worklist graph traversal
+
+Both are wired into `make test`.
+
 ## Tests
 
 `make test` runs the programs under `examples/` against fixed input/expected
@@ -207,6 +221,7 @@ pairs in `tests/`. The examples cover:
 - indirect function calls
 - memory access
 - typed standard input
+- conditional jumps (`jz` / `jnz`) in both polarities
 - P1038-style graph processing
 - frame growth beyond the initial frame-vector capacity
 

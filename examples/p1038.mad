@@ -1,37 +1,45 @@
-// P1038 [NOIP 2003 提高组] 神经网络
+// 洛谷 P1038 [NOIP 2003 提高组] 神经网络
+// https://www.luogu.com.cn/problem/P1038
+//
 // MAD MVP version: topological propagation with flat mem arrays.
 //
-// All arrays are i64 arrays stored in mem.  Index i is stored at byte offset i * 8.
-// Matrix W/E uses offset (i * (n + 1) + j) * 8.
+// All arrays are i64 arrays stored in mem.  Element i lives at byte offset
+// (i * 8); matrix cell (i, j) lives at offset ((i * (n + 1)) + j) * 8.
+//
+// ( ) 是纯分组符号：解释器把它们当作空白。约定如下——
+//   (a b op)                        计算一个值，如 (c 1 +)
+//   (mem (off ...) mread@T) &x =    读内存到变量
+//   (v mem off) write@T             三元写内存
+//   (条件...) label jnz             条件成立跳转
+// 长表达式按"值"拆成几段括号，从左往右依次入栈。
 
 read@i64 n@i64
 read@i64 p@i64
 
 // C[i], U[i], indegree[i], outdegree[i], queue[i]
-n 1 + 8 * alloc C
-n 1 + 8 * alloc U
-n 1 + 8 * alloc IN
-n 1 + 8 * alloc OUT
-n 1 + 8 * alloc Q
+((n 1 +) 8 *) alloc C
+((n 1 +) 8 *) alloc U
+((n 1 +) 8 *) alloc IN
+((n 1 +) 8 *) alloc OUT
+((n 1 +) 8 *) alloc Q
 
 // W[i][j] = edge weight, E[i][j] = 1 iff the edge exists.
-n 1 + dup * 8 * alloc W
-n 1 + dup * 8 * alloc E
-
+((n 1 +) dup * 8 *) alloc W
+((n 1 +) dup * 8 *) alloc E
 
 0 i@i64
 0 c@i64
 0 u@i64
 read_nodes:
-    i 1 + &i =
-    i n > done_nodes jnz
+    (i 1 +) &i =
+    (i n >) done_nodes jnz
 
     read@i64 &c =
-    c C i 8 * write@i64
+    (c C (i 8 *)) write@i64          // C[i] = c
     read@i64 &u =
-    u U i 8 * write@i64
-    0 IN i 8 * write@i64
-    0 OUT i 8 * write@i64
+    (u U (i 8 *)) write@i64          // U[i] = u
+    (0 IN (i 8 *)) write@i64         // IN[i] = 0
+    (0 OUT (i 8 *)) write@i64        // OUT[i] = 0
     read_nodes jmp
 
 done_nodes:
@@ -46,39 +54,37 @@ done_nodes:
 0 delta@i64
 0 cj@i64
 read_edges:
-    e 1 + &e =
-    e p > done_edges jnz
+    (e 1 +) &e =
+    (e p >) done_edges jnz
 
     read@i64 &x =
     read@i64 &y =
     read@i64 &w =
 
-    // W[x][y] = w
-    x n 1 + * y + 8 * &off =
-    w W off write@i64
-
-    // E[x][y] = 1
-    1 E off write@i64
+    // off = (x * (n+1) + y) * 8 —— W[x][y] 的字节偏移
+    ((x (n 1 +) *) y + 8 *) &off =
+    (w W off) write@i64              // W[x][y] = w
+    (1 E off) write@i64              // E[x][y] = 1
 
     // IN[y]++, OUT[x]++
-    IN y 8 * mread@i64 1 + IN y 8 * write@i64
-    OUT x 8 * mread@i64 1 + OUT x 8 * write@i64
+    (IN (y 8 *) mread@i64 1 +) IN (y 8 *) write@i64
+    (OUT (x 8 *) mread@i64 1 +) OUT (x 8 *) write@i64
 
     read_edges jmp
 
 done_edges:
 
 // Queue every indegree-zero node.  Unlike the old reference implementation,
-// inactive input neurons are also processed, so zero-signal paths still release
-// their successors correctly.
+// inactive input neurons are also processed, so zero-signal paths still
+// release their successors correctly.
 0 &i =
 0 tail@i64
 init_queue:
-    i 1 + &i =
-    i n > init_queue_done jnz
-    IN i 8 * mread@i64 0 != init_queue_skip jnz
-    tail 1 + &tail =
-    i Q tail 8 * write@i64
+    (i 1 +) &i =
+    (i n >) init_queue_done jnz
+    ((IN (i 8 *) mread@i64) 0 !=) init_queue_skip jnz
+    (tail 1 +) &tail =
+    (i Q (tail 8 *)) write@i64       // Q[tail] = i
 init_queue_skip:
     init_queue jmp
 init_queue_done:
@@ -86,37 +92,36 @@ init_queue_done:
 0 head@i64
 0 j@i64
 process:
-    head tail >= finished jnz
+    (head tail >=) finished jnz
 
-    head 1 + &head =
-    Q head 8 * mread@i64 &x =
+    (head 1 +) &head =
+    (Q (head 8 *) mread@i64) &x =    // x = Q[head]
 
     0 &j =
     scan_edges:
-        j 1 + &j =
-        j n > scan_done jnz
+        (j 1 +) &j =
+        (j n >) scan_done jnz
 
-        x n 1 + * j + 8 * &off =
-        E off mread@i64 0 == no_edge jnz
+        ((x (n 1 +) *) j + 8 *) &off =
+        ((E off mread@i64) 0 ==) no_edge jnz
 
-        // If C[x] > 0, add W[x][j] * C[x] to C[j].
-        C x 8 * mread@i64 &cx =
-        cx 0 <= no_signal jnz
-        W off mread@i64 &wv =
-        wv cx * &delta =
-        C j 8 * mread@i64 &cj =
-        cj delta + C j 8 * write@i64
+        // 若 C[x] > 0，把 W[x][j] * C[x] 累加到 C[j]
+        (C (x 8 *) mread@i64) &cx =
+        (cx 0 <=) no_signal jnz
+        (W off mread@i64) &wv =
+        (wv cx *) &delta =
+        (C (j 8 *) mread@i64) &cj =
+        ((cj delta +) C (j 8 *)) write@i64   // C[j] += W * C[x]
 
-        // Every processed predecessor reduces indegree, regardless of signal.
+        // 每个前驱处理完都要减一次入度，与信号强弱无关
 no_signal:
-        IN j 8 * mread@i64 1 - IN j 8 * write@i64
-        IN j 8 * mread@i64 0 != not_ready jnz
+        (IN (j 8 *) mread@i64 1 -) IN (j 8 *) write@i64   // IN[j] -= 1
+        ((IN (j 8 *) mread@i64) 0 !=) not_ready jnz
 
-        // Once all predecessors are processed, subtract U and enqueue.
-        C j 8 * mread@i64
-        U j 8 * mread@i64 - C j 8 * write@i64
-        tail 1 + &tail =
-        j Q tail 8 * write@i64
+        // 所有前驱都处理完后减阈值并入队
+        ((C (j 8 *) mread@i64) (U (j 8 *) mread@i64) -) C (j 8 *) write@i64
+        (tail 1 +) &tail =
+        (j Q (tail 8 *)) write@i64       // enqueue j
 
 not_ready:
 no_edge:
@@ -131,23 +136,23 @@ finished:
 0 &i =
 0 found@i64
 print_loop:
-    i 1 + &i =
-    i n > print_done jnz
+    (i 1 +) &i =
+    (i n >) print_done jnz
 
-    OUT i 8 * mread@i64 0 != not_output jnz
-    C i 8 * mread@i64 0 <= not_output jnz
+    ((OUT (i 8 *) mread@i64) 0 !=) not_output jnz
+    ((C (i 8 *) mread@i64) 0 <=) not_output jnz
 
     i printn
     " " printstr
-    C i 8 * mread@i64 print
+    (C (i 8 *) mread@i64) print
     println
-    1 found + &found =
+    (1 found +) &found =
 
 not_output:
     print_loop jmp
 
 print_done:
-found 0 != have_output jnz
+(found 0 !=) have_output jnz
 "NULL" printstr
 println
 have_output:
