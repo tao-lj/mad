@@ -1,0 +1,154 @@
+// P1038 [NOIP 2003 提高组] 神经网络
+// MAD MVP version: topological propagation with flat mem arrays.
+//
+// All arrays are i64 arrays stored in mem.  Index i is stored at byte offset i * 8.
+// Matrix W/E uses offset (i * (n + 1) + j) * 8.
+
+read@i64 n@i64
+read@i64 p@i64
+
+// C[i], U[i], indegree[i], outdegree[i], queue[i]
+n 1 + 8 * alloc C
+n 1 + 8 * alloc U
+n 1 + 8 * alloc IN
+n 1 + 8 * alloc OUT
+n 1 + 8 * alloc Q
+
+// W[i][j] = edge weight, E[i][j] = 1 iff the edge exists.
+n 1 + dup * 8 * alloc W
+n 1 + dup * 8 * alloc E
+
+
+0 i@i64
+0 c@i64
+0 u@i64
+read_nodes:
+    i 1 + &i =
+    i n > done_nodes jz
+
+    read@i64 &c =
+    c C i 8 * write@i64
+    read@i64 &u =
+    u U i 8 * write@i64
+    0 IN i 8 * write@i64
+    0 OUT i 8 * write@i64
+    read_nodes jmp
+
+done_nodes:
+
+0 e@i64
+0 x@i64
+0 y@i64
+0 w@i64
+0 off@i64
+0 cx@i64
+0 wv@i64
+0 delta@i64
+0 cj@i64
+read_edges:
+    e 1 + &e =
+    e p > done_edges jz
+
+    read@i64 &x =
+    read@i64 &y =
+    read@i64 &w =
+
+    // W[x][y] = w
+    x n 1 + * y + 8 * &off =
+    w W off write@i64
+
+    // E[x][y] = 1
+    1 E off write@i64
+
+    // IN[y]++, OUT[x]++
+    IN y 8 * mread@i64 1 + IN y 8 * write@i64
+    OUT x 8 * mread@i64 1 + OUT x 8 * write@i64
+
+    read_edges jmp
+
+done_edges:
+
+// Queue every indegree-zero node.  Unlike the old reference implementation,
+// inactive input neurons are also processed, so zero-signal paths still release
+// their successors correctly.
+0 &i =
+0 tail@i64
+init_queue:
+    i 1 + &i =
+    i n > init_queue_done jz
+    IN i 8 * mread@i64 0 != init_queue_skip jz
+    tail 1 + &tail =
+    i Q tail 8 * write@i64
+init_queue_skip:
+    init_queue jmp
+init_queue_done:
+
+0 head@i64
+0 j@i64
+process:
+    head tail >= finished jz
+
+    head 1 + &head =
+    Q head 8 * mread@i64 &x =
+
+    0 &j =
+    scan_edges:
+        j 1 + &j =
+        j n > scan_done jz
+
+        x n 1 + * j + 8 * &off =
+        E off mread@i64 0 == no_edge jz
+
+        // If C[x] > 0, add W[x][j] * C[x] to C[j].
+        C x 8 * mread@i64 &cx =
+        cx 0 <= no_signal jz
+        W off mread@i64 &wv =
+        wv cx * &delta =
+        C j 8 * mread@i64 &cj =
+        cj delta + C j 8 * write@i64
+
+        // Every processed predecessor reduces indegree, regardless of signal.
+no_signal:
+        IN j 8 * mread@i64 1 - IN j 8 * write@i64
+        IN j 8 * mread@i64 0 != not_ready jz
+
+        // Once all predecessors are processed, subtract U and enqueue.
+        C j 8 * mread@i64
+        U j 8 * mread@i64 - C j 8 * write@i64
+        tail 1 + &tail =
+        j Q tail 8 * write@i64
+
+not_ready:
+no_edge:
+    scan_edges jmp
+
+scan_done:
+    process jmp
+
+finished:
+
+// Output nodes have OUT[i] == 0. Print only C[i] > 0.
+0 &i =
+0 found@i64
+print_loop:
+    i 1 + &i =
+    i n > print_done jz
+
+    OUT i 8 * mread@i64 0 != not_output jz
+    C i 8 * mread@i64 0 <= not_output jz
+
+    i printn
+    " " printstr
+    C i 8 * mread@i64 print
+    println
+    1 found + &found =
+
+not_output:
+    print_loop jmp
+
+print_done:
+found 0 != have_output jz
+"NULL" printstr
+println
+have_output:
+halt

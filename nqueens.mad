@@ -1,0 +1,100 @@
+// MAD N-Queens
+// Input: N
+// Output: every solution as an N*N matrix, then the solution count.
+
+read@i64 n@i64
+n 8 * alloc board
+0 solutions
+
+:{n board}print_solution
+    0 r@i64
+    0 c@i64
+    0 cell@i64
+
+print_rows:
+    r n >= print_done jz
+    0 &c =
+
+print_cols:
+    c n >= print_row_done jz
+
+    board r 8 * mread@i64 &cell =
+    cell c == print_queen jz
+
+    "." printstr
+    print_next jmp
+
+print_queen:
+    "Q" printstr
+
+print_next:
+    c 1 + &c =
+    print_cols jmp
+
+print_row_done:
+    println
+    r 1 + &r =
+    print_rows jmp
+
+print_done:
+    println
+    ret
+;
+
+:{n board solutions}solve [row@i64]
+    0 col@i64
+    0 k@i64
+    0 prev@i64
+    0 dr@i64
+    0 dc@i64
+
+    row n == found_solution jz
+
+try_col:
+    col n >= solve_done jz
+    0 &k =
+
+check_previous:
+    k row >= place_queen jz
+
+    board k 8 * mread@i64 &prev =
+
+    // 同一列
+    prev col == reject_col jz
+
+    // |col - prev| == row - k
+    row k - &dr =
+    col prev - &dc =
+    dc dr == reject_col jz
+    prev col - &dc =
+    dc dr == reject_col jz
+
+    k 1 + &k =
+    check_previous jmp
+
+place_queen:
+    col board row 8 * write@i64
+
+    row 1 + solve
+    try_next jmp
+
+reject_col:
+    try_next jmp
+
+try_next:
+    col 1 + &col =
+    try_col jmp
+
+found_solution:
+    solutions 1 + &solutions =
+    print_solution
+
+solve_done:
+    ret
+;
+
+0 solve
+
+solutions print
+println
+halt
