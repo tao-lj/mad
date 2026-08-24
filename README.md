@@ -6,13 +6,26 @@ The MVP is a C17 interpreter and **does not build an AST**.
 ## Build
 
 ```sh
-cc -std=c17 -O2 -Wall -Wextra -pedantic mad.c -o mad
+make            # build ./mad from src/
+make test       # build and run the example-based regression tests
+make clean      # remove build artifacts
 ```
 
-or:
+`CC`, `OPTFLAGS` and `CFLAGS` can be overridden, e.g. `make CC=gcc OPTFLAGS="-O0 -g"`.
 
-```sh
-make
+## Project layout
+
+```text
+src/          interpreter sources
+  common.*    shared utilities: grow-only vectors, diagnostics, file IO
+  lexer.*     tokenizer ([] group expansion, :{...} global capture)
+  value.*     runtime values, typed pools, memory objects, pointers, data stack
+  vm.h        VM state and symbol-table structures
+  symtab.c    function/label discovery over the token stream
+  exec.c      interpreter core: frames, opcode dispatch, variable resolution
+  main.c      CLI entry point
+examples/     runnable .mad programs
+tests/        input/expected pairs used by `make test`
 ```
 
 ## Core syntax
@@ -187,7 +200,8 @@ The language design additionally reserves the smaller integer widths and `f32`; 
 
 ## Tests
 
-Included examples cover:
+`make test` runs the programs under `examples/` against fixed input/expected
+pairs in `tests/`. The examples cover:
 
 - recursion / GCD
 - assignment and type errors
