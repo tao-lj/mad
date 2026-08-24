@@ -3,6 +3,8 @@
 MAD is a deliberately small postfix / data-stack language prototype.
 The MVP is a C17 interpreter and **does not build an AST**.
 
+Full language reference: [`MANUAL.md`](MANUAL.md) (语法、内建字、内存模型、实现原理、风格指南).
+
 ## Build
 
 ```sh
@@ -22,7 +24,7 @@ src/          interpreter sources
   value.*     runtime values, typed pools, memory objects, pointers, data stack
   vm.h        VM state and symbol-table structures
   symtab.c    function/label discovery over the token stream
-  exec.c      interpreter core: frames, opcode dispatch, variable resolution
+  exec.c      threaded-code compiler and dispatch loop (labels-as-values)
   main.c      CLI entry point
 examples/     runnable .mad programs
 tests/        input/expected pairs used by `make test`
@@ -227,4 +229,4 @@ pairs in `tests/`. The examples cover:
 
 ## Design philosophy
 
-MAD intentionally avoids an AST in the MVP. The interpreter works with tokens, symbol tables, function slices, runtime pools, frames, and a data stack. A future bytecode VM can retain the same source semantics while compiling the token stream into compact opcodes.
+MAD intentionally avoids an AST. The interpreter works with tokens, symbol tables, function slices, runtime pools, frames, and a data stack. Function bodies are lazily compiled into a direct-threaded instruction array on first execution (GCC labels-as-values): literals, names, call targets, and jump destinations are resolved once at compile time, `label jz/jnz/jmp` sequences are fused into direct branches, and dispatch is a single computed goto instead of per-token string comparisons. Variables remain dynamically resolved at run time so that existence can depend on the execution path.

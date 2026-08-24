@@ -8,7 +8,7 @@
 //   value.*   runtime values, typed pools, memory, pointers, data stack
 //   vm.h      VM state and symbol tables
 //   symtab.c  function/label discovery
-//   exec.c    interpreter core
+//   exec.c    threaded-code compiler and dispatch loop
 #include "common.h"
 #include "vm.h"
 
