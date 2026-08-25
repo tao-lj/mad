@@ -79,6 +79,7 @@ typedef struct {
     size_t fix_n, fix_cap;
     int pending_label;
     const Token *pending_tok;
+    const Token *prev_tok;  // previous non-dead token (for ':' after "name")
 } IrBuilder;
 
 static void irb_own(IrBuilder *b, char *s) {
@@ -95,6 +96,7 @@ static size_t irb_emit(IrBuilder *b, IrKind kind, const Token *t) {
     ir->line = t ? t->line : 0;
     ir->aux  = -1;
     ir->aux2 = -1;
+    ir->label_idx = -1;
     return b->n - 1;
 }
 
@@ -102,6 +104,7 @@ static void irb_flush(IrBuilder *b) {
     if (b->pending_label < 0) return;
     size_t idx = irb_emit(b, IR_PUSH_LABEL, b->pending_tok);
     b->v[idx].u.u = (uint64_t)b->pending_label;
+    b->v[idx].label_idx = b->pending_label;
     b->pending_label = -1;
     b->pending_tok = NULL;
 }
@@ -112,8 +115,10 @@ static void irb_const(IrBuilder *b, IrKind kind, const Token *t, uint64_t payloa
 }
 
 static void irb_static_jump(IrBuilder *b, IrKind kind, const Token *t,
-                            LabelSym *target) {
+                            LabelSym *target, int64_t label_id) {
     size_t idx = irb_emit(b, kind, t);
+    b->v[idx].aux = label_id;
+    b->v[idx].label_idx = label_id;
     VEC_GROW(b->fix, b->fix_n, b->fix_cap, IrFixup);
     b->fix[b->fix_n].ir_idx  = idx;
     b->fix[b->fix_n].map_idx = target->token_index - b->fn->body_start;
@@ -143,9 +148,19 @@ static void irb_word(IrBuilder *b, const Token *t) {
     VM *vm = b->vm;
     const char *s = t->text;
 
-    // Label definitions are pure position markers.
+    // Label definitions are pure position markers; emit IR_LABEL_DEF.
     size_t len = strlen(s);
-    if (len && s[len - 1] == ':') return;
+    if (len && s[len - 1] == ':') {
+        char tmp[MAX_NAME];
+        memcpy(tmp, s, len - 1);
+        tmp[len - 1] = '\0';
+        LabelSym *ls = vm_find_label(b->fn, tmp);
+        if (ls) {
+            size_t idx = irb_emit(b, IR_LABEL_DEF, t);
+            b->v[idx].label_idx = (int64_t)(ls - b->fn->labels.v);
+        }
+        return;
+    }
 
     LabelSym *ls = vm_find_label(b->fn, s);
     if (ls) {
@@ -169,7 +184,7 @@ static void irb_word(IrBuilder *b, const Token *t) {
     if ((is_jz || is_jnz || is_jmp) && b->pending_label >= 0) {
         LabelSym *target = &b->fn->labels.v[b->pending_label];
         IrKind k = is_jmp ? IR_JMP : (is_jz ? IR_JZ : IR_JNZ);
-        irb_static_jump(b, k, t, target);
+        irb_static_jump(b, k, t, target, b->pending_label);
         b->pending_label = -1;
         b->pending_tok = NULL;
         return;
@@ -276,6 +291,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             irb_flush(&b);
             size_t idx = irb_emit(&b, IR_CONST_I64, t);
             b.v[idx].u.i = strtoll(t->text, NULL, 10);
+            b.prev_tok = t;
             ++i;
             break;
         }
@@ -283,6 +299,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             irb_flush(&b);
             size_t idx = irb_emit(&b, IR_CONST_U64, t);
             b.v[idx].u.u = strtoull(t->text + 2, NULL, 10);
+            b.prev_tok = t;
             ++i;
             break;
         }
@@ -290,22 +307,41 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             irb_flush(&b);
             size_t idx = irb_emit(&b, IR_CONST_F64, t);
             b.v[idx].u.d = strtod(t->text, NULL);
+            b.prev_tok = t;
             ++i;
             break;
         }
         case TOK_STRING:
             irb_flush(&b);
             irb_const(&b, IR_CONST_STR, t, compile_string_literal(vm, t));
+            b.prev_tok = t;
             ++i;
             break;
-        case TOK_COLON:
+        case TOK_COLON: {
             irb_flush(&b);
+            // Emit IR_LABEL_DEF for the preceding word token (e.g. "t1" before ":")
+            if (b.prev_tok && b.prev_tok->kind == TOK_WORD) {
+                const char *pn = b.prev_tok->text;
+                size_t plen = strlen(pn);
+                if (plen > 0 && pn[plen - 1] == ':') {
+                    char tmp[MAX_NAME];
+                    memcpy(tmp, pn, plen - 1);
+                    tmp[plen - 1] = '\0';
+                    LabelSym *ls = vm_find_label(fn, tmp);
+                    if (ls) {
+                        size_t idx = irb_emit(&b, IR_LABEL_DEF, b.prev_tok);
+                        b.v[idx].label_idx = (int64_t)(ls - fn->labels.v);
+                    }
+                }
+            }
             if (b.top_level) {
                 while (i < fn->body_end && vm->toks.v[i].kind != TOK_SEMI)
                     ++i;
             }
+            b.prev_tok = t;
             ++i;
             break;
+        }
         case TOK_SEMI:
             ++i;
             goto done;
@@ -322,9 +358,11 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             } else {
                 irb_word(&b, t);
             }
+            b.prev_tok = t;
             ++i;
             break;
         default:
+            b.prev_tok = t;
             ++i;
             break;
         }
@@ -434,74 +472,203 @@ size_t ir_optimize(IrNode *ir, size_t n) {
 }
 
 // ---------------------------------------------------------------------------
-//  Checker — linear stack-depth validation
+//  Stack effect table — single source of truth
 // ---------------------------------------------------------------------------
 
-// Checker uses min/max depth tracking because IR_VAR (load-or-declare)
-// has an ambiguous stack effect (-1 or +1).  We flag only definite
-// underflows (min_depth < 0).
+IrEffect ir_stack_effect(IrKind k) {
+    // clang-format off
+    static const IrEffect table[IR_COUNT] = {
+        [IR_CONST_I64]  = { +1, false },
+        [IR_CONST_U64]  = { +1, false },
+        [IR_CONST_F64]  = { +1, false },
+        [IR_CONST_STR]  = { +1, false },
+        [IR_PUSH_LABEL] = { +1, false },
+        [IR_VAR]        = {  0, true  },   // -1 (declare) or +1 (load)
+        [IR_REF]        = { +1, false },
+        [IR_DEREF]      = { +1, false },
+        [IR_CAST]       = {  0, false },
+        [IR_ARITH]      = { -1, false },   // pop 2, push 1
+        [IR_CMP]        = { -1, false },
+        [IR_ASSIGN]     = { -2, false },   // pop ptr + val
+        [IR_ALLOC]      = {  0, false },   // pop bytes, push mem
+        [IR_HALLOC]     = {  0, false },
+        [IR_FREE]       = { -1, false },
+        [IR_MREAD]      = { -1, false },   // pop offset+mem, push val
+        [IR_WRITE]      = { -3, false },   // pop offset+mem+val
+        [IR_PRINT]      = { -1, false },
+        [IR_PRINTLN]    = {  0, false },
+        [IR_PRINTSTR]   = { -1, false },
+        [IR_READ]       = { +1, false },
+        [IR_DUP]        = { +1, false },
+        [IR_DROP]       = { -1, false },
+        [IR_SWAP]       = {  0, false },
+        [IR_ASSERT]     = { -1, false },
+        [IR_IMPORT]     = {  0, true  },   // unknown effect
+        [IR_CALL]       = {  0, true  },   // unknown effect
+        [IR_CALL_IND]   = {  0, true  },
+        [IR_JMP]        = {  0, false },
+        [IR_JZ]         = { -1, false },
+        [IR_JNZ]        = { -1, false },
+        [IR_JMP_DYN]    = { -1, false },   // pop target
+        [IR_JZ_DYN]     = { -2, false },   // pop target + cond
+        [IR_JNZ_DYN]    = { -2, false },
+        [IR_RET]        = {  0, false },
+        [IR_HALT]       = {  0, false },
+        [IR_LABEL_DEF]  = {  0, false },
+        [IR_DEAD]       = {  0, false },
+    };
+    // clang-format on
+    return table[k];
+}
 
-bool ir_check(const IrNode *ir, size_t n, const FuncSym *fn) {
-    (void)fn;
-    int lo = 0, hi = 0; // min/max possible depth
-    (void)hi;
+// Minimum pops needed before an instruction (ignores pushes).
+// Returns 0 for instructions that need nothing on the stack.
+static int ir_min_pops(IrKind k) {
+    switch (k) {
+    case IR_ARITH: case IR_CMP: case IR_MREAD:     return 2;
+    case IR_ASSIGN:                                  return 2;
+    case IR_WRITE:                                   return 3;
+    case IR_DROP: case IR_FREE: case IR_PRINT:
+    case IR_PRINTSTR: case IR_ASSERT:                return 1;
+    case IR_JZ: case IR_JNZ:                         return 1;
+    case IR_JMP_DYN:                                 return 1;
+    case IR_JZ_DYN: case IR_JNZ_DYN:                 return 2;
+    default:                                         return 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Checker — label-aware stack-depth propagation
+//
+// Stack depth is tracked as a range [lo, hi] to handle IR_VAR's ambiguity
+// (load-or-declare: -1 or +1).  A worklist of (position, lo, hi) frames
+// is processed until fixpoint.  Errors are reported only when lo < 0
+// (definite underflow).
+// ---------------------------------------------------------------------------
+
+typedef struct { size_t pos; int lo, hi; } CfgFrame;
+
+bool ir_check(const IrNode *ir, size_t n, FuncSym *fn) {
+    if (!fn || fn->labels.n == 0) return true;
+
+    // 1. Build label → IR position index.
+    size_t *label_pos = malloc(fn->labels.n * sizeof(size_t));
+    for (size_t i = 0; i < fn->labels.n; ++i) label_pos[i] = SIZE_MAX;
+    for (size_t i = 0; i < n; ++i) {
+        if (ir[i].kind == IR_LABEL_DEF && ir[i].label_idx >= 0)
+            label_pos[ir[i].label_idx] = i;
+    }
+
+    // 2. Per-label depth range state (-1 = unknown).
+    int *label_lo = malloc(fn->labels.n * sizeof(int));
+    int *label_hi = malloc(fn->labels.n * sizeof(int));
+    for (size_t i = 0; i < fn->labels.n; ++i) {
+        label_lo[i] = -1;
+        label_hi[i] = -1;
+    }
+
+    // 3. Worklist.
+    CfgFrame *wl = NULL;
+    size_t wl_n = 0, wl_cap = 0;
+    #define WL_PUSH(p, l, h) do { \
+        VEC_GROW(wl, wl_n, wl_cap, CfgFrame); \
+        wl[wl_n++] = (CfgFrame){(p), (l), (h)}; \
+    } while (0)
+    WL_PUSH(0, 0, 0);
+
     bool ok = true;
 
-    for (size_t i = 0; i < n; ++i) {
-        if (ir[i].kind == IR_DEAD) continue;
-        if (ir[i].kind == IR_LABEL_DEF) continue;
+    // 4. Process worklist until fixpoint.
+    while (wl_n > 0) {
+        CfgFrame cur = wl[--wl_n];
+        size_t pos = cur.pos;
+        int lo = cur.lo, hi = cur.hi;
 
-        switch (ir[i].kind) {
-        // definite +1
-        case IR_CONST_I64: case IR_CONST_U64: case IR_CONST_F64:
-        case IR_CONST_STR: case IR_PUSH_LABEL:
-        case IR_REF: case IR_DUP: case IR_READ:
-            lo++; hi++; break;
+        while (pos < n) {
+            if (ir[pos].kind == IR_DEAD) { ++pos; continue; }
 
-        // ambiguous: -1 if declaring, +1 if loading
-        case IR_VAR:
-            lo--; hi++; break;
+            // — label definition: record or verify depth range —
+            if (ir[pos].kind == IR_LABEL_DEF) {
+                int id = (int)ir[pos].label_idx;
+                if (id >= 0) {
+                    if (label_lo[id] < 0) {
+                        // First visit: record and continue.
+                        label_lo[id] = lo;
+                        label_hi[id] = hi;
+                        WL_PUSH(pos + 1, lo, hi);
+                    } else {
+                        // Already known: verify overlap.
+                        int nlo = lo < label_lo[id] ? lo : label_lo[id];
+                        int nhi = hi > label_hi[id] ? hi : label_hi[id];
+                        if (nlo != label_lo[id] || nhi != label_hi[id]) {
+                            label_lo[id] = nlo;
+                            label_hi[id] = nhi;
+                            WL_PUSH(pos + 1, nlo, nhi);
+                        }
+                    }
+                }
+                ++pos;
+                continue;
+            }
 
-        // definitely -2+1 = -1
-        case IR_ARITH: case IR_CMP: case IR_MREAD:
-            lo--; hi--; break;
+            // — apply stack effect —
+            IrEffect eff = ir_stack_effect(ir[pos].kind);
+            int pops = ir_min_pops(ir[pos].kind);
 
-        // definitely -2
-        case IR_ASSIGN:
-            lo -= 2; hi -= 2; break;
+            // Error only when even the best-case depth is insufficient.
+            if (hi < pops) {
+                fprintf(stderr, "check %s:%zu: stack underflow before '%s'"
+                        " (need %d, have %d..%d)\n",
+                        fn->name, ir[pos].line,
+                        ir[pos].text ? ir[pos].text : "?",
+                        pops, lo, hi);
+                ok = false;
+            }
+            if (eff.ambig) {
+                lo--;
+                hi++;
+            } else {
+                lo += eff.net;
+                hi += eff.net;
+            }
+            // Clamp lo to 0: negative lo means "might be empty", not "definitely underflow".
+            if (lo < 0) lo = 0;
 
-        // definitely -3
-        case IR_WRITE:
-            lo -= 3; hi -= 3; break;
+            // — terminal —
+            if (ir[pos].kind == IR_RET || ir[pos].kind == IR_HALT) break;
 
-        // definitely -1
-        case IR_DROP: case IR_FREE: case IR_PRINT: case IR_PRINTSTR:
-        case IR_ASSERT: case IR_JZ: case IR_JNZ:
-            lo--; hi--; break;
+            // — calls / imports: unknown effect, widen range —
+            if (ir[pos].kind == IR_CALL || ir[pos].kind == IR_CALL_IND ||
+                ir[pos].kind == IR_IMPORT) {
+                ++pos;
+                // The call could have consumed everything (depth=0) or
+                // left the stack intact.  Fork both.
+                WL_PUSH(pos, 0, 0);
+                WL_PUSH(pos, lo, hi);
+                break;
+            }
 
-        // net 0
-        case IR_PRINTLN: case IR_CAST: case IR_ALLOC: case IR_HALLOC:
-        case IR_JMP:
-            break;
+            // — static jump: propagate to target —
+            if ((ir[pos].kind == IR_JMP || ir[pos].kind == IR_JZ ||
+                 ir[pos].kind == IR_JNZ) && ir[pos].aux >= 0) {
+                int tid = (int)ir[pos].aux;
+                if (tid >= 0 && (size_t)tid < fn->labels.n &&
+                    label_pos[tid] != SIZE_MAX) {
+                    WL_PUSH(label_pos[tid], lo, hi);
+                }
+                if (ir[pos].kind != IR_JMP) break; // jz/jnz fall-through ends
+                break;
+            }
 
-        // calls / imports: reset tracking (unknown effect)
-        case IR_IMPORT: case IR_CALL: case IR_CALL_IND:
-            lo = 0; hi = 100; break;
-
-        // dynamic variants
-        case IR_JMP_DYN:
-            lo--; hi--; break;
-        case IR_JZ_DYN: case IR_JNZ_DYN:
-            lo -= 2; hi -= 2; break;
-
-        case IR_RET: case IR_HALT:
-            lo = 0; hi = 0; break;
-
-        default:
-            break;
+            ++pos;
         }
-        if (lo < 0) lo = 0;
     }
+    #undef WL_PUSH
+
+    free(label_pos);
+    free(label_lo);
+    free(label_hi);
+    free(wl);
     return ok;
 }
 

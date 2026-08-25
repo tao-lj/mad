@@ -42,7 +42,16 @@ typedef struct {
     bool has_ty;       // type annotation present; also halloc flag for ALLOC
     int64_t aux;       // pre-resolved label id, -1 if absent
     int64_t aux2;      // pre-resolved func id, -1 if absent
+    int64_t label_idx; // label index (in fn->labels.v) for LABEL_DEF,
+                       // PUSH_LABEL, and static JMP/JZ/JNZ targets; -1 if N/A
 } IrNode;
+
+// Stack effect of an instruction: net = pushes - pops.
+// `ambig` is true for IR_VAR (load-or-declare: -1 or +1).
+typedef struct { int8_t net; bool ambig; } IrEffect;
+
+// Single source of truth for every IrKind's stack effect.
+IrEffect ir_stack_effect(IrKind k);
 
 // Build IR from a function body token range.
 // *out_map is a malloc'd array of size (body_end - body_start) mapping
@@ -53,8 +62,9 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map);
 // Constant-fold and eliminate dead pairs in-place.
 size_t ir_optimize(IrNode *ir, size_t n);
 
-// Basic stack-depth check (linear walk). Returns true if no errors.
-bool ir_check(const IrNode *ir, size_t n, const FuncSym *fn);
+// Stack-depth check with label-aware propagation.
+// Returns true if no errors found.
+bool ir_check(const IrNode *ir, size_t n, FuncSym *fn);
 
 // Lower IR to threaded Op array.  Resolves jump targets, fills dispatch
 // labels, builds code_map.  The map (body-relative token index → op index)
