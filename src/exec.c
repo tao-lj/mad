@@ -409,6 +409,7 @@ static void execute_code(VM *vm, FuncSym *fn) {
         disp[OP_PUSH_U64] = &&L_PUSH_U64;
         disp[OP_PUSH_F64] = &&L_PUSH_F64;
         disp[OP_PUSH_STR] = &&L_PUSH_STR;
+        disp[OP_PUSH_BOOL] = &&L_PUSH_BOOL;
         disp[OP_PUSH_LABEL] = &&L_PUSH_LABEL;
         disp[OP_PUSH_FUNC] = &&L_PUSH_FUNC;
         disp[OP_WORD_VAR] = &&L_WORD_VAR;
@@ -468,6 +469,9 @@ L_PUSH_U64:
     NEXT();
 L_PUSH_F64:
     valstack_push(st, make_f64(&vm->f64, ip->u.d));
+    NEXT();
+L_PUSH_BOOL:
+    valstack_push(st, make_bool(&vm->bytes, (bool)ip->u.i));
     NEXT();
 L_PUSH_STR:
     valstack_push(st, (Value){T_MEMPTR, memptr_new(&vm->memptrs, ip->u.u)});

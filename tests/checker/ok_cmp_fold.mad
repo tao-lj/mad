@@ -1,0 +1,6 @@
+// CMP fold produces IR_CONST_BOOL; checker validates branch on folded result.
+// jz on true (non-zero) falls through, jnz on true jumps.
+1 1 == t1 jz
+// fall-through: jz didn't jump because condition is true (non-zero)
+100 printn halt
+t1: 200 printn halt

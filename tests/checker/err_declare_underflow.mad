@@ -1,0 +1,3 @@
+// declare consumes stack top — empty stack is an error.
+x@i64 drop
+halt

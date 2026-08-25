@@ -1,0 +1,3 @@
+// branch requires bool/i64/u64 — f64 directly is not a condition.
+1.0 t1 jz
+t1: halt

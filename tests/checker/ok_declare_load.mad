@@ -1,0 +1,4 @@
+// IR_DECLARE pops from stack; IR_LOAD pushes value back.
+42 answer@i64
+answer drop
+halt

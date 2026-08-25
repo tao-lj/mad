@@ -5,7 +5,7 @@
 #include "vm.h"
 
 typedef enum {
-    OP_PUSH_I64, OP_PUSH_U64, OP_PUSH_F64, OP_PUSH_STR,
+    OP_PUSH_I64, OP_PUSH_U64, OP_PUSH_F64, OP_PUSH_STR, OP_PUSH_BOOL,
     OP_PUSH_LABEL, OP_PUSH_FUNC,
     OP_WORD_VAR,   // plain word: load existing variable or declare from stack top
     OP_REF_NAME,   // &name: ptr/memptr to variable, else first-class label/func

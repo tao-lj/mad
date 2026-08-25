@@ -80,11 +80,33 @@ typedef struct {
     int pending_label;
     const Token *pending_tok;
     const Token *prev_tok;  // previous non-dead token (for ':' after "name")
+    // — declared-name set for LOAD/DECLARE disambiguation —
+    char **declared;
+    size_t declared_n, declared_cap;
 } IrBuilder;
 
 static void irb_own(IrBuilder *b, char *s) {
     VEC_GROW(b->fn->owned, b->fn->owned_n, b->fn->owned_cap, char *);
     b->fn->owned[b->fn->owned_n++] = s;
+}
+
+static bool irb_name_in_list(const char *name, char **list, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        if (strcmp(name, list[i]) == 0) return true;
+    return false;
+}
+
+static bool irb_is_loaded(IrBuilder *b, const char *name) {
+    if (irb_name_in_list(name, b->fn->params, b->fn->param_count)) return true;
+    if (irb_name_in_list(name, b->fn->globals, b->fn->global_count)) return true;
+    for (size_t i = 0; i < b->declared_n; ++i)
+        if (strcmp(name, b->declared[i]) == 0) return true;
+    return false;
+}
+
+static void irb_declare(IrBuilder *b, const char *name) {
+    VEC_GROW(b->declared, b->declared_n, b->declared_cap, char *);
+    b->declared[b->declared_n++] = (char *)name; // borrows from ir->u.name
 }
 
 static size_t irb_emit(IrBuilder *b, IrKind kind, const Token *t) {
@@ -259,11 +281,13 @@ static void irb_word(IrBuilder *b, const Token *t) {
     split_annotated_name(s, base, sizeof(base), &has_ty, &ann);
     if (!is_var_token(base))
         fatal_at(t->line, "unknown token '%s'", s);
-    size_t idx = irb_emit(b, IR_VAR, t);
+    IrKind vk = irb_is_loaded(b, base) ? IR_LOAD : IR_DECLARE;
+    size_t idx = irb_emit(b, vk, t);
     b->v[idx].u.name = xstrdup(base);
     irb_own(b, b->v[idx].u.name);
     b->v[idx].ty = ann;
     b->v[idx].has_ty = has_ty;
+    if (vk == IR_DECLARE) irb_declare(b, b->v[idx].u.name);
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +466,7 @@ size_t ir_optimize(IrNode *ir, size_t n) {
                 ir[i+2].kind == IR_CMP) {
                 ir[i].kind   = IR_DEAD;
                 ir[i+1].kind = IR_DEAD;
-                ir[i+2].kind = IR_CONST_I64;
+                ir[i+2].kind = IR_CONST_BOOL;
                 ir[i+2].u.i  = cmp_fold(ir[i+2].u.i,
                                          ir[i].u.i, ir[i+1].u.i);
                 changed = true;
@@ -546,15 +570,18 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
     case IR_CONST_U64:  stack_push(stack, T_U64);   return true;
     case IR_CONST_F64:  stack_push(stack, T_F64);   return true;
     case IR_CONST_STR:  stack_push(stack, T_MEM);    return true;
+    case IR_CONST_BOOL: stack_push(stack, T_BOOL);   return true;
     case IR_PUSH_LABEL: stack_push(stack, T_LABEL);  return true;
     case IR_REF:        stack_push(stack, T_PTR);    return true;
     case IR_DEREF:      stack_push(stack, T_I64);   return true;
 
-    // — IR_VAR: ambiguous (declare or load) —
-    case IR_VAR:
-        // In the linear checker, treat as +1 (load); declare case handled
-        // by ir_check's range propagation.
+    // — IR_LOAD: push named variable (+1) —
+    case IR_LOAD:
         stack_push(stack, ir->ty);
+        return true;
+    // — IR_DECLARE: pop stack top, bind to name (-1) —
+    case IR_DECLARE:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before declare"); return false; }
         return true;
 
     // — cast: consume top, push cast type —
@@ -852,8 +879,10 @@ void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
         case IR_CONST_U64: op->code = dt[OP_PUSH_U64]; op->u.u = ir[i].u.u; break;
         case IR_CONST_F64: op->code = dt[OP_PUSH_F64]; op->u.d = ir[i].u.d; break;
         case IR_CONST_STR: op->code = dt[OP_PUSH_STR]; op->u.u = ir[i].u.u; break;
+        case IR_CONST_BOOL: op->code = dt[OP_PUSH_BOOL]; op->u.i = ir[i].u.i; break;
         case IR_PUSH_LABEL: op->code = dt[OP_PUSH_LABEL]; op->u.u = ir[i].u.u; break;
-        case IR_VAR:
+        case IR_LOAD:
+        case IR_DECLARE:
             op->code = dt[OP_WORD_VAR];
             op->u.name = ir[i].u.name;
             op->ty = ir[i].ty;

@@ -1,0 +1,3 @@
+// CMP produces bool; fold constants so optimizer emits IR_CONST_BOOL.
+1 2 == dup drop drop
+halt
