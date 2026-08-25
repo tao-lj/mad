@@ -1,9 +1,11 @@
 # MAD — MAD Ain't Disciplined
 
+[`中文版`](README_zh_CN.md)
+
 MAD is a deliberately small postfix / data-stack language. The implementation is a
 C17 interpreter that **never builds an AST**.
 
-Full language reference: [`MANUAL.md`](MANUAL.md) — [`中文版`](MANUAL_zh.md)
+Full language reference: [`MANUAL.md`](MANUAL.md) — [`中文版`](MANUAL_zh_CN.md)
 
 ## Design philosophy
 
@@ -11,8 +13,8 @@ MAD achieves strong functionality with minimal implementation cost by combining
 ideas from three traditions:
 
 - **Data flow: FORTH-style stack thinking.** No variables in the traditional sense —
-  values live on a data stack, words pop operands and push results,书写顺序即执行顺序.
-  Parentheses are visual grouping only (`(a b +) c *` ≡ `a b + c *`).
+  values live on a data stack, words pop operands and push results, writing
+  order is execution order. Parentheses are visual grouping only (`(a b +) c *` ≡ `a b + c *`).
 
 - **Control flow: assembly-style labels and jumps.** `label condition jnz` follows
   the assembler convention — condition before jump, `jz`/`jnz` for conditional,

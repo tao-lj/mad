@@ -2,7 +2,7 @@
 
 MAD 是一门刻意保持极简的后缀/数据栈语言。实现为 C17 解释器，**不构建 AST**。
 
-完整语言参考：[`MANUAL.md`](MANUAL.md) — [`English`](MANUAL.md)
+完整语言参考：[`MANUAL_zh_CN.md`](MANUAL_zh_CN.md) — [`English`](MANUAL.md)
 
 ## 设计理念
 
