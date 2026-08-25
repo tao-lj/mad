@@ -56,10 +56,6 @@ typedef struct { Frame *v; size_t n, cap; } FrameVec;
 
 typedef struct {
     TokenVec toks;
-    I64Pool i64;
-    U64Pool u64;
-    F64Pool f64;
-    BytePool bytes;
     MemVec mems;
     PtrVec ptrs;
     MemPtrVec memptrs;

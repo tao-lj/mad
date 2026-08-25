@@ -1,4 +1,4 @@
-// Runtime values: typed pools, memory objects, pointers, data stack.
+// Runtime values: inline scalars, memory objects, pointers, data stack.
 #ifndef MAD_VALUE_H
 #define MAD_VALUE_H
 
@@ -29,27 +29,25 @@ bool is_type_name(const char *s, TypeKind *out);
 TypeKind split_annotated_name(const char *tok, char *base, size_t base_sz,
                               bool *has_type, TypeKind *ty);
 
-// A data-stack value is just (type, idx); idx indexes the matching pool below.
+// A data-stack value: scalars stored inline, handles (mem/ptr/label/func)
+// stored as an opaque u64 id.
 typedef struct {
     TypeKind type;
-    uint64_t idx;
+    union {
+        int64_t  i;
+        uint64_t u;
+        double   d;
+        bool     b;
+        uint8_t  c;
+    } as;
 } Value;
 
-typedef struct { int64_t *v; size_t n, cap; } I64Pool;
-typedef struct { uint64_t *v; size_t n, cap; } U64Pool;
-typedef struct { double *v; size_t n, cap; } F64Pool;
-typedef struct { uint8_t *v; size_t n, cap; } BytePool;
-
-uint64_t i64_new(I64Pool *p, int64_t x);
-uint64_t u64_new(U64Pool *p, uint64_t x);
-uint64_t f64_new(F64Pool *p, double x);
-uint64_t byte_new(BytePool *p, uint8_t x);
-
-Value make_i64(I64Pool *p, int64_t x);
-Value make_u64(U64Pool *p, uint64_t x);
-Value make_f64(F64Pool *p, double x);
-Value make_bool(BytePool *p, bool x);
-Value make_char(BytePool *p, uint8_t x);
+// Scalar constructors — no pool needed, value is inline.
+Value make_i64(int64_t x);
+Value make_u64(uint64_t x);
+Value make_f64(double x);
+Value make_bool(bool x);
+Value make_char(uint8_t x);
 
 // ---------- Runtime memory ----------
 

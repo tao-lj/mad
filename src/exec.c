@@ -24,19 +24,22 @@ static bool is_top_level(Frame *fr) { return fname_is_module(fr->fn->name); }
 // ---------- Value accessors ----------
 
 static double value_to_f64(VM *vm, Value v, size_t line) {
+    (void)vm;
     if (v.type != T_F64) fatal_at(line, "expected f64, got %s", type_name(v.type));
-    return vm->f64.v[v.idx];
+    return v.as.d;
 }
 
 static int64_t get_i64(VM *vm, Value v, size_t line) {
+    (void)vm;
     if (v.type != T_I64) fatal_at(line, "expected i64, got %s", type_name(v.type));
-    return vm->i64.v[v.idx];
+    return v.as.i;
 }
 
 static bool is_true(VM *vm, Value v, size_t line) {
-    if (v.type == T_BOOL) return vm->bytes.v[v.idx] != 0;
-    if (v.type == T_I64) return vm->i64.v[v.idx] != 0;
-    if (v.type == T_U64) return vm->u64.v[v.idx] != 0;
+    (void)vm;
+    if (v.type == T_BOOL) return v.as.b;
+    if (v.type == T_I64) return v.as.i != 0;
+    if (v.type == T_U64) return v.as.u != 0;
     fatal_at(line, "expected boolean/integer condition, got %s", type_name(v.type));
     return false;
 }
@@ -100,15 +103,15 @@ static Value make_ptr_value(VM *vm, Frame *fr, const char *name, size_t line) {
     }
     if (g) {
         size_t gi = (size_t)(v - vm->globals.v);
-        return (Value){T_PTR, ptr_new(&vm->ptrs, (PtrRef){0, 0, true, gi})};
+        return (Value){T_PTR, .as.u = ptr_new(&vm->ptrs, (PtrRef){0, 0, true, gi})};
     }
     size_t li = (size_t)(v - fr->locals.v);
-    return (Value){T_PTR, ptr_new(&vm->ptrs, (PtrRef){fr->frame_id, li, false, 0})};
+    return (Value){T_PTR, .as.u = ptr_new(&vm->ptrs, (PtrRef){fr->frame_id, li, false, 0})};
 }
 
 static Var *ptr_target(VM *vm, Value pv, size_t line) {
     if (pv.type != T_PTR) fatal_at(line, "expected ptr, got %s", type_name(pv.type));
-    PtrRef r = vm->ptrs.v[pv.idx];
+    PtrRef r = vm->ptrs.v[pv.as.u];
     if (r.is_global) {
         if (r.global_index >= vm->globals.n)
             fatal_at(line, "dangling global pointer");
@@ -130,31 +133,35 @@ static void assign_var(Var *dst, Value value, size_t line) {
 }
 
 static Value cast_value(VM *vm, Value v, TypeKind ty, size_t line) {
+    (void)vm;
     if (v.type == ty) return v;
     switch (ty) {
     case T_I64:
-        if (v.type == T_U64) return make_i64(&vm->i64, (int64_t)vm->u64.v[v.idx]);
-        if (v.type == T_F64) return make_i64(&vm->i64, (int64_t)vm->f64.v[v.idx]);
-        if (v.type == T_BOOL || v.type == T_CHAR) return make_i64(&vm->i64, (int64_t)vm->bytes.v[v.idx]);
+        if (v.type == T_U64) return make_i64((int64_t)v.as.u);
+        if (v.type == T_F64) return make_i64((int64_t)v.as.d);
+        if (v.type == T_BOOL) return make_i64((int64_t)v.as.b);
+        if (v.type == T_CHAR) return make_i64((int64_t)v.as.c);
         break;
     case T_U64:
-        if (v.type == T_I64) return make_u64(&vm->u64, (uint64_t)vm->i64.v[v.idx]);
-        if (v.type == T_F64) return make_u64(&vm->u64, (uint64_t)vm->f64.v[v.idx]);
-        if (v.type == T_BOOL || v.type == T_CHAR) return make_u64(&vm->u64, (uint64_t)vm->bytes.v[v.idx]);
-        if (v.type == T_LABEL || v.type == T_FUNC) return make_u64(&vm->u64, v.idx);
+        if (v.type == T_I64) return make_u64((uint64_t)v.as.i);
+        if (v.type == T_F64) return make_u64((uint64_t)v.as.d);
+        if (v.type == T_BOOL) return make_u64((uint64_t)v.as.b);
+        if (v.type == T_CHAR) return make_u64((uint64_t)v.as.c);
+        if (v.type == T_LABEL || v.type == T_FUNC) return make_u64(v.as.u);
         break;
     case T_F64:
-        if (v.type == T_I64) return make_f64(&vm->f64, (double)vm->i64.v[v.idx]);
-        if (v.type == T_U64) return make_f64(&vm->f64, (double)vm->u64.v[v.idx]);
-        if (v.type == T_BOOL || v.type == T_CHAR) return make_f64(&vm->f64, (double)vm->bytes.v[v.idx]);
+        if (v.type == T_I64) return make_f64((double)v.as.i);
+        if (v.type == T_U64) return make_f64((double)v.as.u);
+        if (v.type == T_BOOL) return make_f64((double)v.as.b);
+        if (v.type == T_CHAR) return make_f64((double)v.as.c);
         break;
     case T_BOOL:
-        if (v.type == T_I64) return make_bool(&vm->bytes, vm->i64.v[v.idx] != 0);
-        if (v.type == T_U64) return make_bool(&vm->bytes, vm->u64.v[v.idx] != 0);
+        if (v.type == T_I64) return make_bool(v.as.i != 0);
+        if (v.type == T_U64) return make_bool(v.as.u != 0);
         break;
     case T_CHAR:
-        if (v.type == T_U64) return make_char(&vm->bytes, (uint8_t)vm->u64.v[v.idx]);
-        if (v.type == T_I64) return make_char(&vm->bytes, (uint8_t)vm->i64.v[v.idx]);
+        if (v.type == T_U64) return make_char((uint8_t)v.as.u);
+        if (v.type == T_I64) return make_char((uint8_t)v.as.i);
         break;
     case T_LABEL:
         // Explicit integer -> label is deliberately not supported.
@@ -173,16 +180,16 @@ static Value cast_value(VM *vm, Value v, TypeKind ty, size_t line) {
 
 static void print_value(VM *vm, Value v) {
     switch (v.type) {
-    case T_I64: printf("%" PRId64, vm->i64.v[v.idx]); break;
-    case T_U64: printf("%" PRIu64, vm->u64.v[v.idx]); break;
-    case T_F64: printf("%g", vm->f64.v[v.idx]); break;
-    case T_BOOL: printf("%s", vm->bytes.v[v.idx] ? "true" : "false"); break;
-    case T_CHAR: printf("%c", vm->bytes.v[v.idx]); break;
-    case T_MEM: printf("<mem:%" PRIu64 ">", v.idx); break;
-    case T_MEMPTR: printf("<memptr:%" PRIu64 ">", vm->memptrs.v[v.idx].mem_id); break;
-    case T_PTR: printf("<ptr:%" PRIu64 ">", v.idx); break;
-    case T_LABEL: printf("<label:%" PRIu64 ">", v.idx); break;
-    case T_FUNC: printf("<func:%" PRIu64 ">", v.idx); break;
+    case T_I64: printf("%" PRId64, v.as.i); break;
+    case T_U64: printf("%" PRIu64, v.as.u); break;
+    case T_F64: printf("%g", v.as.d); break;
+    case T_BOOL: printf("%s", v.as.b ? "true" : "false"); break;
+    case T_CHAR: printf("%c", v.as.c); break;
+    case T_MEM: printf("<mem:%" PRIu64 ">", v.as.u); break;
+    case T_MEMPTR: printf("<memptr:%" PRIu64 ">", vm->memptrs.v[v.as.u].mem_id); break;
+    case T_PTR: printf("<ptr:%" PRIu64 ">", v.as.u); break;
+    case T_LABEL: printf("<label:%" PRIu64 ">", v.as.u); break;
+    case T_FUNC: printf("<func:%" PRIu64 ">", v.as.u); break;
     }
 }
 
@@ -190,8 +197,8 @@ static void print_value(VM *vm, Value v) {
 
 // Resolves a mem/memptr stack value to its memory object id.
 static uint64_t mem_id_of(VM *vm, Value v, size_t line, const char *op) {
-    if (v.type == T_MEM) return v.idx;
-    if (v.type == T_MEMPTR) return vm->memptrs.v[v.idx].mem_id;
+    if (v.type == T_MEM) return v.as.u;
+    if (v.type == T_MEMPTR) return vm->memptrs.v[v.as.u].mem_id;
     fatal_at(line, "%s expects mem/memptr, got %s", op, type_name(v.type));
     return 0;
 }
@@ -303,7 +310,7 @@ static void do_import(VM *vm, size_t line) {
     Value v = valstack_pop(&vm->stack, "import");
     if (v.type != T_MEMPTR)
         fatal_at(line, "import expects memptr path, got %s", type_name(v.type));
-    MemObj *m = require_mem(vm, vm->memptrs.v[v.idx].mem_id, line);
+    MemObj *m = require_mem(vm, vm->memptrs.v[v.as.u].mem_id, line);
     const char *raw = (const char *)m->data;
     if (!memchr(m->data, '\0', m->len))
         fatal_at(line, "import path is not NUL-terminated");
@@ -358,34 +365,34 @@ static void do_stdin_read(VM *vm, TypeKind ty, size_t line, const char *text) {
     case T_I64: {
         int64_t x;
         if (scanf("%" SCNd64, &x) != 1) fatal_at(line, "failed to read i64");
-        valstack_push(&vm->stack, make_i64(&vm->i64, x));
+        valstack_push(&vm->stack, make_i64(x));
         break;
     }
     case T_U64: {
         uint64_t x;
         if (scanf("%" SCNu64, &x) != 1) fatal_at(line, "failed to read u64");
-        valstack_push(&vm->stack, make_u64(&vm->u64, x));
+        valstack_push(&vm->stack, make_u64(x));
         break;
     }
     case T_F64: {
         double x;
         if (scanf("%lf", &x) != 1) fatal_at(line, "failed to read f64");
-        valstack_push(&vm->stack, make_f64(&vm->f64, x));
+        valstack_push(&vm->stack, make_f64(x));
         break;
     }
     case T_CHAR: {
         unsigned char ch;
         if (scanf(" %c", &ch) != 1) fatal_at(line, "failed to read char");
-        valstack_push(&vm->stack, make_char(&vm->bytes, ch));
+        valstack_push(&vm->stack, make_char(ch));
         break;
     }
     case T_BOOL: {
         char buf[64];
         if (scanf("%63s", buf) != 1) fatal_at(line, "failed to read bool");
         if (word_is(buf, "true") || word_is(buf, "1")) {
-            valstack_push(&vm->stack, make_bool(&vm->bytes, true));
+            valstack_push(&vm->stack, make_bool(true));
         } else if (word_is(buf, "false") || word_is(buf, "0")) {
-            valstack_push(&vm->stack, make_bool(&vm->bytes, false));
+            valstack_push(&vm->stack, make_bool(false));
         } else {
             fatal_at(line, "invalid bool input '%s'", buf);
         }
@@ -462,25 +469,25 @@ static void execute_code(VM *vm, FuncSym *fn) {
     NEXT();
 
 L_PUSH_I64:
-    valstack_push(st, make_i64(&vm->i64, ip->u.i));
+    valstack_push(st, make_i64(ip->u.i));
     NEXT();
 L_PUSH_U64:
-    valstack_push(st, make_u64(&vm->u64, ip->u.u));
+    valstack_push(st, make_u64(ip->u.u));
     NEXT();
 L_PUSH_F64:
-    valstack_push(st, make_f64(&vm->f64, ip->u.d));
+    valstack_push(st, make_f64(ip->u.d));
     NEXT();
 L_PUSH_BOOL:
-    valstack_push(st, make_bool(&vm->bytes, (bool)ip->u.i));
+    valstack_push(st, make_bool((bool)ip->u.i));
     NEXT();
 L_PUSH_STR:
-    valstack_push(st, (Value){T_MEMPTR, memptr_new(&vm->memptrs, ip->u.u)});
+    valstack_push(st, (Value){T_MEMPTR, .as.u = memptr_new(&vm->memptrs, ip->u.u)});
     NEXT();
 L_PUSH_LABEL:
-    valstack_push(st, (Value){T_LABEL, ip->u.u});
+    valstack_push(st, (Value){T_LABEL, .as.u = ip->u.u});
     NEXT();
 L_PUSH_FUNC:
-    valstack_push(st, (Value){T_FUNC, ip->u.u});
+    valstack_push(st, (Value){T_FUNC, .as.u = ip->u.u});
     NEXT();
 
 L_WORD_VAR: {
@@ -529,24 +536,24 @@ L_REF_NAME: {
             require_initialized(vv, name, ip->line);
             if (vv->value.type != T_MEM)
                 fatal_at(ip->line, "internal mem variable type error");
-            valstack_push(st, (Value){T_MEMPTR, memptr_new(&vm->memptrs, vv->value.idx)});
+            valstack_push(st, (Value){T_MEMPTR, .as.u = memptr_new(&vm->memptrs, vv->value.as.u)});
         } else {
             valstack_push(st, make_ptr_value(vm, current_frame(vm), name, ip->line));
         }
         NEXT();
     }
     if (ip->aux >= 0) {
-        valstack_push(st, (Value){T_LABEL, (uint64_t)ip->aux});
+        valstack_push(st, (Value){T_LABEL, .as.u = (uint64_t)ip->aux});
         NEXT();
     }
     if (ip->aux2 >= 0) {
-        valstack_push(st, (Value){T_FUNC, (uint64_t)ip->aux2});
+        valstack_push(st, (Value){T_FUNC, .as.u = (uint64_t)ip->aux2});
         NEXT();
     }
     // Late-bound '&name': the function may have arrived via a later "import".
     FuncSym *fs = vm_find_func(&vm->funcs, name);
     if (fs) {
-        valstack_push(st, (Value){T_FUNC, (uint64_t)(fs - vm->funcs.v)});
+        valstack_push(st, (Value){T_FUNC, .as.u = (uint64_t)(fs - vm->funcs.v)});
         NEXT();
     }
     fatal_at(ip->line, "unknown reference '&%s'", name);
@@ -582,7 +589,7 @@ L_ARITH: {
         case AR_DIV: r = x / y; break;
         default: fatal_at(ip->line, "%% is not defined for f64");
         }
-        valstack_push(st, make_f64(&vm->f64, r));
+        valstack_push(st, make_f64(r));
         NEXT();
     }
     int64_t x = get_i64(vm, a, ip->line);
@@ -601,7 +608,7 @@ L_ARITH: {
         r = x % y;
         break;
     }
-    valstack_push(st, make_i64(&vm->i64, r));
+    valstack_push(st, make_i64(r));
     NEXT();
 }
 
@@ -619,14 +626,14 @@ L_CMP: {
     int k = (int)ip->u.i;
     bool r;
     if (a.type == T_I64 && b.type == T_I64) {
-        r = CMP_RESULT(vm->i64.v[a.idx], vm->i64.v[b.idx]);
+        r = CMP_RESULT(a.as.i, b.as.i);
     } else if (a.type == T_F64 && b.type == T_F64) {
-        r = CMP_RESULT(vm->f64.v[a.idx], vm->f64.v[b.idx]);
+        r = CMP_RESULT(a.as.d, b.as.d);
     } else {
         fatal_at(ip->line, "comparison requires equal scalar types, got %s",
                  type_name(a.type));
     }
-    valstack_push(st, make_bool(&vm->bytes, r));
+    valstack_push(st, make_bool(r));
     NEXT();
 }
 
@@ -647,7 +654,7 @@ L_HALLOC: {
     if (bytes < 0) fatal_at(ip->line, "negative allocation");
     uint64_t id = mem_new(&vm->mems, (size_t)bytes, heap, false);
     if (!heap) frame_track_local_mem(current_frame(vm), id);
-    valstack_push(st, (Value){T_MEM, id});
+    valstack_push(st, (Value){T_MEM, .as.u = id});
     NEXT();
 }
 
@@ -655,10 +662,10 @@ L_FREE: {
     Value m = valstack_pop(st, ip->text);
     uint64_t id;
     if (m.type == T_MEM) {
-        id = m.idx;
+        id = m.as.u;
     } else if (m.type == T_MEMPTR) {
-        if (m.idx >= vm->memptrs.n) fatal_at(ip->line, "invalid memptr");
-        id = vm->memptrs.v[m.idx].mem_id;
+        if (m.as.u >= vm->memptrs.n) fatal_at(ip->line, "invalid memptr");
+        id = vm->memptrs.v[m.as.u].mem_id;
     } else {
         fatal_at(ip->line, "free expects mem/memptr, got %s", type_name(m.type));
     }
@@ -685,11 +692,11 @@ L_MREAD: {
     }
     if (o + sz > m->len) fatal_at(ip->line, "read out of bounds");
     switch (ty) {
-    case T_I64: { int64_t x; memcpy(&x, m->data + o, 8); valstack_push(st, make_i64(&vm->i64, x)); } break;
-    case T_U64: { uint64_t x; memcpy(&x, m->data + o, 8); valstack_push(st, make_u64(&vm->u64, x)); } break;
-    case T_F64: { double x; memcpy(&x, m->data + o, 8); valstack_push(st, make_f64(&vm->f64, x)); } break;
-    case T_BOOL: valstack_push(st, make_bool(&vm->bytes, m->data[o] != 0)); break;
-    default: valstack_push(st, make_char(&vm->bytes, m->data[o])); break;
+    case T_I64: { int64_t x; memcpy(&x, m->data + o, 8); valstack_push(st, make_i64(x)); } break;
+    case T_U64: { uint64_t x; memcpy(&x, m->data + o, 8); valstack_push(st, make_u64(x)); } break;
+    case T_F64: { double x; memcpy(&x, m->data + o, 8); valstack_push(st, make_f64(x)); } break;
+    case T_BOOL: valstack_push(st, make_bool(m->data[o] != 0)); break;
+    default: valstack_push(st, make_char(m->data[o])); break;
     }
     NEXT();
 }
@@ -715,10 +722,10 @@ L_WRITE: {
     size_t o = (size_t)get_i64(vm, off, ip->line);
     if (o + sz > m->len) fatal_at(ip->line, "write out of bounds");
     switch (ty) {
-    case T_I64: memcpy(m->data + o, &vm->i64.v[val.idx], 8); break;
-    case T_U64: memcpy(m->data + o, &vm->u64.v[val.idx], 8); break;
-    case T_F64: memcpy(m->data + o, &vm->f64.v[val.idx], 8); break;
-    default: m->data[o] = vm->bytes.v[val.idx]; break;
+    case T_I64: memcpy(m->data + o, &val.as.i, 8); break;
+    case T_U64: memcpy(m->data + o, &val.as.u, 8); break;
+    case T_F64: memcpy(m->data + o, &val.as.d, 8); break;
+    default: m->data[o] = val.as.c; break;
     }
     NEXT();
 }
@@ -775,8 +782,8 @@ L_CALL_IND: {
     Value fv = valstack_pop(st, ip->text);
     if (fv.type != T_FUNC)
         fatal_at(ip->line, "call expects func, got %s", type_name(fv.type));
-    if (fv.idx >= vm->funcs.n) fatal_at(ip->line, "invalid func id");
-    call_by_value(vm, &vm->funcs.v[fv.idx], ip->line, ip->text);
+    if (fv.as.u >= vm->funcs.n) fatal_at(ip->line, "invalid func id");
+    call_by_value(vm, &vm->funcs.v[fv.as.u], ip->line, ip->text);
     if (vm->halted) return;
     NEXT();
 }
@@ -800,26 +807,26 @@ L_JMP_DYN: {
     Value target = valstack_pop(st, ip->text);
     if (target.type != T_LABEL)
         fatal_at(ip->line, "%s expects label, got %s", ip->text, type_name(target.type));
-    if (target.idx >= fn->labels.n) fatal_at(ip->line, "invalid label id");
-    JUMP_TO(fn->code_map[fn->labels.v[target.idx].token_index - fn->body_start]);
+    if (target.as.u >= fn->labels.n) fatal_at(ip->line, "invalid label id");
+    JUMP_TO(fn->code_map[fn->labels.v[target.as.u].token_index - fn->body_start]);
 }
 
 L_JZ_DYN: {
     Value target = valstack_pop(st, ip->text);
     if (target.type != T_LABEL)
         fatal_at(ip->line, "%s expects label, got %s", ip->text, type_name(target.type));
-    if (target.idx >= fn->labels.n) fatal_at(ip->line, "invalid label id");
+    if (target.as.u >= fn->labels.n) fatal_at(ip->line, "invalid label id");
     if (is_true(vm, valstack_pop(st, ip->text), ip->line)) NEXT();
-    JUMP_TO(fn->code_map[fn->labels.v[target.idx].token_index - fn->body_start]);
+    JUMP_TO(fn->code_map[fn->labels.v[target.as.u].token_index - fn->body_start]);
 }
 
 L_JNZ_DYN: {
     Value target = valstack_pop(st, ip->text);
     if (target.type != T_LABEL)
         fatal_at(ip->line, "%s expects label, got %s", ip->text, type_name(target.type));
-    if (target.idx >= fn->labels.n) fatal_at(ip->line, "invalid label id");
+    if (target.as.u >= fn->labels.n) fatal_at(ip->line, "invalid label id");
     if (!is_true(vm, valstack_pop(st, ip->text), ip->line)) NEXT();
-    JUMP_TO(fn->code_map[fn->labels.v[target.idx].token_index - fn->body_start]);
+    JUMP_TO(fn->code_map[fn->labels.v[target.as.u].token_index - fn->body_start]);
 }
 
 L_RET:
@@ -870,10 +877,6 @@ void vm_run_top_level(VM *vm) {
 
 void vm_free(VM *vm) {
     free_tokens(&vm->toks);
-    free(vm->i64.v);
-    free(vm->u64.v);
-    free(vm->f64.v);
-    free(vm->bytes.v);
     for (size_t i = 0; i < vm->mems.n; ++i) free(vm->mems.v[i].data);
     free(vm->mems.v);
     free(vm->ptrs.v);

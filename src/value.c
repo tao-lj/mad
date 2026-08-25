@@ -55,37 +55,13 @@ TypeKind split_annotated_name(const char *tok, char *base, size_t base_sz,
     return t;
 }
 
-// ---------- Typed pools ----------
+// ---------- Scalar constructors (inline, no pool) ----------
 
-uint64_t i64_new(I64Pool *p, int64_t x) {
-    VEC_GROW(p->v, p->n, p->cap, int64_t);
-    p->v[p->n] = x;
-    return p->n++;
-}
-
-uint64_t u64_new(U64Pool *p, uint64_t x) {
-    VEC_GROW(p->v, p->n, p->cap, uint64_t);
-    p->v[p->n] = x;
-    return p->n++;
-}
-
-uint64_t f64_new(F64Pool *p, double x) {
-    VEC_GROW(p->v, p->n, p->cap, double);
-    p->v[p->n] = x;
-    return p->n++;
-}
-
-uint64_t byte_new(BytePool *p, uint8_t x) {
-    VEC_GROW(p->v, p->n, p->cap, uint8_t);
-    p->v[p->n] = x;
-    return p->n++;
-}
-
-Value make_i64(I64Pool *p, int64_t x) { return (Value){T_I64, i64_new(p, x)}; }
-Value make_u64(U64Pool *p, uint64_t x) { return (Value){T_U64, u64_new(p, x)}; }
-Value make_f64(F64Pool *p, double x) { return (Value){T_F64, f64_new(p, x)}; }
-Value make_bool(BytePool *p, bool x) { return (Value){T_BOOL, byte_new(p, (uint8_t)(x ? 1 : 0))}; }
-Value make_char(BytePool *p, uint8_t x) { return (Value){T_CHAR, byte_new(p, x)}; }
+Value make_i64(int64_t x)       { return (Value){T_I64,  .as.i = x}; }
+Value make_u64(uint64_t x)      { return (Value){T_U64,  .as.u = x}; }
+Value make_f64(double x)        { return (Value){T_F64,  .as.d = x}; }
+Value make_bool(bool x)         { return (Value){T_BOOL, .as.b = x}; }
+Value make_char(uint8_t x)      { return (Value){T_CHAR, .as.c = x}; }
 
 // ---------- Runtime memory ----------
 
