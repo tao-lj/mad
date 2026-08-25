@@ -5,7 +5,10 @@
 #include "lexer.h"
 #include "value.h"
 
-typedef struct Op Op; // threaded-code instruction, defined in exec.c
+typedef struct Op Op; // threaded-code instruction, defined in tcode.h
+
+// True for the synthetic top-level / imported module frames.
+bool fname_is_module(const char *n);
 
 typedef struct {
     char *name;

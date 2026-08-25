@@ -2,6 +2,7 @@
 #ifndef MAD_COMMON_H
 #define MAD_COMMON_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,6 +29,9 @@ char *path_dir_of(const char *path);
 // relative): collapses "//", resolves "." and "..". Returns NULL if the
 // path has too many components.
 char *path_canonical(const char *base, const char *raw);
+
+// strcmp shortcut (used by both the compiler and the runtime).
+bool word_is(const char *s, const char *kw);
 
 // Double the capacity of a grow-only vector when it is full.
 #define VEC_GROW(ptr, n, cap, T) \

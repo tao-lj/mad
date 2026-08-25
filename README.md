@@ -24,7 +24,8 @@ src/          interpreter sources
   value.*     runtime values, typed pools, memory objects, pointers, data stack
   vm.h        VM state and symbol-table structures
   symtab.c    function/label discovery over the token stream
-  exec.c      threaded-code compiler and dispatch loop (labels-as-values)
+  tcode.*     threaded-code compiler (token classification, op emission, jump fusion)
+  exec.c      runtime: frames, variable resolution, dispatch loop (labels-as-values), builtins
   main.c      CLI entry point
 examples/     one directory per program: main.mad + input + expected,
               all run by `make test`

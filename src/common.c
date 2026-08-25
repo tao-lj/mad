@@ -110,3 +110,5 @@ char *path_canonical(const char *base, const char *raw) {
     *w = '\0';
     return out;
 }
+
+bool word_is(const char *s, const char *kw) { return strcmp(s, kw) == 0; }
