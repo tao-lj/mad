@@ -284,6 +284,15 @@ goto（`goto *(++ip)->code`）。字面量、名字、调用目标、跳转目�
 `ir_check()` 沿控制流遍历并在标签处合并栈状态，确保类型安全与栈平衡。
 常量折叠对所有数值类型和浮点类型生效，结果保留在 IR 中供运行期直接使用。
 
+**三层操作体系**（representation → operation family → opcode）：
+操作按类型族分类——整数族（i8..u64, bool, char）、浮点族（f32, f64）。
+builder 维护编译期类型栈，当两个操作数类型已知且相同时，发射**类型化 IR**
+（如 `IR_ADD_I64`、`IR_EQ_F64`），lowerer 映射为类型化 opcode
+（如 `OP_ADD_I64`），runtime 走无类型分派的快速路径。
+类型未知时走**泛型 opcode**（`OP_ADD`、`OP_EQ`），runtime 做类型分派。
+这使得 hot path（i64/f64 算术、比较）零分派开销，同时保持 opcode 空间紧凑
+——只对 common case 做 typed specialization，rare case 走 generic handler。
+
 核心数据结构：token 流（唯一中间表示）、IrNode（IR 指令）、
 Op（threaded code 指令）、FuncSym（函数符号 + 编译缓存）、
 Value（内联标量联合体）、Frame（局部变量 + 本帧 alloc 清单）、MemObj、数据栈。

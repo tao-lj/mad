@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 typedef enum {
+    T_NONE,  // unknown / not yet determined (compile-time sentinel)
     T_I8, T_U8,
     T_I16, T_U16,
     T_I32, T_U32,
@@ -28,6 +29,12 @@ TypeKind split_annotated_name(const char *tok, char *base, size_t base_sz,
 
 // Returns true for all scalar types (integer, float, bool, char).
 bool is_numeric(TypeKind t);
+
+// Type family queries — classify types by operation family.
+bool type_is_integer(TypeKind t);  // i8..u64, bool, char
+bool type_is_float(TypeKind t);    // f32, f64
+bool type_is_i64(TypeKind t);      // exactly i64
+bool type_is_f64(TypeKind t);      // exactly f64
 
 // Byte size of a scalar type (for mread/write bounds checks).
 size_t type_size(TypeKind t);

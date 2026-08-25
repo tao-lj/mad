@@ -26,6 +26,7 @@ const char *type_name(TypeKind t) {
     case T_PTR:    return "ptr";
     case T_LABEL:  return "label";
     case T_FUNC:   return "func";
+    case T_NONE:   return "?";
     }
     return "?";
 }
@@ -77,6 +78,16 @@ bool is_numeric(TypeKind t) {
            t == T_I32 || t == T_U32 || t == T_I64 || t == T_U64 ||
            t == T_F32 || t == T_F64 || t == T_BOOL || t == T_CHAR;
 }
+
+bool type_is_integer(TypeKind t) {
+    return t == T_I8  || t == T_U8  || t == T_I16 || t == T_U16 ||
+           t == T_I32 || t == T_U32 || t == T_I64 || t == T_U64 ||
+           t == T_BOOL || t == T_CHAR;
+}
+
+bool type_is_float(TypeKind t) { return t == T_F32 || t == T_F64; }
+bool type_is_i64(TypeKind t)   { return t == T_I64; }
+bool type_is_f64(TypeKind t)   { return t == T_F64; }
 
 size_t type_size(TypeKind t) {
     switch (t) {

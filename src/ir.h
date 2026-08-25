@@ -18,9 +18,30 @@ typedef enum {
     IR_PUSH_LABEL,  // push a first-class label value
     IR_LOAD, IR_DECLARE, IR_REF, IR_DEREF,
     IR_CAST,
-    IR_ARITH, IR_CMP, IR_ASSIGN,
-    IR_BITNOT, IR_LOGNOT, IR_SHL, IR_SHR,
-    IR_BITAND, IR_BITOR, IR_BITXOR, IR_LOGAND, IR_LOGOR,
+    // Typed arithmetic (hot paths: i64, f64)
+    IR_ADD_I64, IR_ADD_F64,
+    IR_SUB_I64, IR_SUB_F64,
+    IR_MUL_I64, IR_MUL_F64,
+    IR_DIV_I64, IR_DIV_F64,
+    IR_MOD_I64,
+    // Generic arithmetic (fallback: unknown or mixed types)
+    IR_ADD, IR_SUB, IR_MUL, IR_DIV, IR_MOD,
+    // Typed comparison (hot paths)
+    IR_EQ_I64, IR_EQ_F64,
+    IR_NE_I64, IR_NE_F64,
+    IR_LT_I64, IR_LT_F64,
+    IR_GT_I64, IR_GT_F64,
+    IR_LE_I64, IR_LE_F64,
+    IR_GE_I64, IR_GE_F64,
+    // Generic comparison (fallback)
+    IR_EQ, IR_NE, IR_LT, IR_GT, IR_LE, IR_GE,
+    IR_ASSIGN,
+    // Bitwise (integer only, typed i64 path + generic)
+    IR_BITNOT, IR_LOGNOT,
+    IR_SHL_I64, IR_SHR_I64,
+    IR_AND_I64, IR_OR_I64, IR_XOR_I64,
+    IR_SHL, IR_SHR, IR_AND, IR_OR, IR_XOR,
+    IR_LOGAND, IR_LOGOR,
     IR_ALLOC, IR_HALLOC, IR_FREE,
     IR_MREAD, IR_WRITE,
     IR_PRINT, IR_PRINTLN, IR_PRINTSTR, IR_READ,

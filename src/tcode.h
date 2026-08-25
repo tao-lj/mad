@@ -16,9 +16,30 @@ typedef enum {
     OP_REF_NAME,   // &name: ptr/memptr to variable, else first-class label/func
     OP_DEREF_NAME, // *name
     OP_CAST,       // !@type
-    OP_ARITH, OP_CMP, OP_ASSIGN,
-    OP_BITNOT, OP_LOGNOT, OP_SHL, OP_SHR,
-    OP_BITAND, OP_BITOR, OP_BITXOR, OP_LOGAND, OP_LOGOR,
+    // Typed arithmetic (hot paths: i64, f64)
+    OP_ADD_I64, OP_ADD_F64,
+    OP_SUB_I64, OP_SUB_F64,
+    OP_MUL_I64, OP_MUL_F64,
+    OP_DIV_I64, OP_DIV_F64,
+    OP_MOD_I64,
+    // Generic arithmetic (fallback: unknown/mixed types)
+    OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD,
+    // Typed comparison (hot paths)
+    OP_EQ_I64, OP_EQ_F64,
+    OP_NE_I64, OP_NE_F64,
+    OP_LT_I64, OP_LT_F64,
+    OP_GT_I64, OP_GT_F64,
+    OP_LE_I64, OP_LE_F64,
+    OP_GE_I64, OP_GE_F64,
+    // Generic comparison (fallback)
+    OP_EQ, OP_NE, OP_LT, OP_GT, OP_LE, OP_GE,
+    OP_ASSIGN,
+    // Bitwise (typed i64 + generic)
+    OP_BITNOT, OP_LOGNOT,
+    OP_SHL_I64, OP_SHR_I64,
+    OP_AND_I64, OP_OR_I64, OP_XOR_I64,
+    OP_SHL, OP_SHR, OP_AND, OP_OR, OP_XOR,
+    OP_LOGAND, OP_LOGOR,
     OP_ALLOC, OP_HALLOC, OP_FREE,
     OP_MREAD, OP_WRITE,
     OP_PRINT, OP_PRINTLN, OP_PRINTSTR, OP_READ,

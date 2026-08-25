@@ -142,6 +142,7 @@ static Value cast_value(VM *vm, Value v, TypeKind ty, size_t line) {
         return make_u8((uint8_t)val_as_i64(v));
     case T_I16:
         return make_i16((int16_t)val_as_i64(v));
+    case T_NONE: fatal_at(line, "cannot cast to unknown type"); return v;
     case T_U16:
         return make_u16((uint16_t)val_as_i64(v));
     case T_I32:
@@ -197,6 +198,7 @@ static void print_value(VM *vm, Value v) {
     case T_PTR: printf("<ptr:%" PRIu64 ">", v.as.u64); break;
     case T_LABEL: printf("<label:%" PRIu64 ">", v.as.u64); break;
     case T_FUNC: printf("<func:%" PRIu64 ">", v.as.u64); break;
+    case T_NONE: printf("<?>");
     }
 }
 
@@ -479,18 +481,58 @@ static void execute_code(VM *vm, FuncSym *fn) {
         disp[OP_REF_NAME] = &&L_REF_NAME;
         disp[OP_DEREF_NAME] = &&L_DEREF_NAME;
         disp[OP_CAST] = &&L_CAST;
-        disp[OP_ARITH] = &&L_ARITH;
-        disp[OP_CMP] = &&L_CMP;
+        // Typed arithmetic
+        disp[OP_ADD_I64] = &&L_ADD_I64;
+        disp[OP_ADD_F64] = &&L_ADD_F64;
+        disp[OP_SUB_I64] = &&L_SUB_I64;
+        disp[OP_SUB_F64] = &&L_SUB_F64;
+        disp[OP_MUL_I64] = &&L_MUL_I64;
+        disp[OP_MUL_F64] = &&L_MUL_F64;
+        disp[OP_DIV_I64] = &&L_DIV_I64;
+        disp[OP_DIV_F64] = &&L_DIV_F64;
+        disp[OP_MOD_I64] = &&L_MOD_I64;
+        // Generic arithmetic
+        disp[OP_ADD] = &&L_ADD;
+        disp[OP_SUB] = &&L_SUB;
+        disp[OP_MUL] = &&L_MUL;
+        disp[OP_DIV] = &&L_DIV;
+        disp[OP_MOD] = &&L_MOD;
+        // Typed comparison
+        disp[OP_EQ_I64] = &&L_EQ_I64;
+        disp[OP_EQ_F64] = &&L_EQ_F64;
+        disp[OP_NE_I64] = &&L_NE_I64;
+        disp[OP_NE_F64] = &&L_NE_F64;
+        disp[OP_LT_I64] = &&L_LT_I64;
+        disp[OP_LT_F64] = &&L_LT_F64;
+        disp[OP_GT_I64] = &&L_GT_I64;
+        disp[OP_GT_F64] = &&L_GT_F64;
+        disp[OP_LE_I64] = &&L_LE_I64;
+        disp[OP_LE_F64] = &&L_LE_F64;
+        disp[OP_GE_I64] = &&L_GE_I64;
+        disp[OP_GE_F64] = &&L_GE_F64;
+        // Generic comparison
+        disp[OP_EQ] = &&L_EQ;
+        disp[OP_NE] = &&L_NE;
+        disp[OP_LT] = &&L_LT;
+        disp[OP_GT] = &&L_GT;
+        disp[OP_LE] = &&L_LE;
+        disp[OP_GE] = &&L_GE;
         disp[OP_ASSIGN] = &&L_ASSIGN;
+        // Bitwise (typed i64 + generic)
         disp[OP_BITNOT] = &&L_BITNOT;
         disp[OP_LOGNOT] = &&L_LOGNOT;
+        disp[OP_SHL_I64] = &&L_SHL_I64;
+        disp[OP_SHR_I64] = &&L_SHR_I64;
+        disp[OP_AND_I64] = &&L_AND_I64;
+        disp[OP_OR_I64]  = &&L_OR_I64;
+        disp[OP_XOR_I64] = &&L_XOR_I64;
         disp[OP_SHL] = &&L_SHL;
         disp[OP_SHR] = &&L_SHR;
-        disp[OP_BITAND] = &&L_BITAND;
-        disp[OP_BITOR] = &&L_BITOR;
-        disp[OP_BITXOR] = &&L_BITXOR;
+        disp[OP_AND] = &&L_AND;
+        disp[OP_OR]  = &&L_OR;
+        disp[OP_XOR] = &&L_XOR;
         disp[OP_LOGAND] = &&L_LOGAND;
-        disp[OP_LOGOR] = &&L_LOGOR;
+        disp[OP_LOGOR]  = &&L_LOGOR;
         disp[OP_ALLOC] = &&L_ALLOC;
         disp[OP_HALLOC] = &&L_HALLOC;
         disp[OP_FREE] = &&L_FREE;
@@ -660,57 +702,200 @@ L_CAST: {
     NEXT();
 }
 
-L_ARITH: {
+// --- Typed arithmetic: fast path, no type dispatch ---
+
+L_ADD_I64: {
     Value b = valstack_pop(st, ip->text);
     Value a = valstack_pop(st, ip->text);
-    int k = (int)ip->u.i;
-    if (a.type == T_F64 || b.type == T_F64) {
-        double x = value_to_f64(vm, a, ip->line);
-        double y = value_to_f64(vm, b, ip->line);
-        double r = 0;
-        switch (k) {
-        case AR_ADD: r = x + y; break;
-        case AR_SUB: r = x - y; break;
-        case AR_MUL: r = x * y; break;
-        case AR_DIV: r = x / y; break;
-        default: fatal_at(ip->line, "%% is not defined for f64");
-        }
-        valstack_push(st, make_f64(r));
-        NEXT();
-    }
-    if (a.type == T_F32 || b.type == T_F32) {
-        float x = (float)value_to_f64(vm, a, ip->line);
-        float y = (float)value_to_f64(vm, b, ip->line);
-        float r = 0;
-        switch (k) {
-        case AR_ADD: r = x + y; break;
-        case AR_SUB: r = x - y; break;
-        case AR_MUL: r = x * y; break;
-        case AR_DIV: r = x / y; break;
-        default: fatal_at(ip->line, "%% is not defined for f32");
-        }
-        valstack_push(st, make_f32(r));
-        NEXT();
-    }
-    int64_t x = get_i64(vm, a, ip->line);
-    int64_t y = get_i64(vm, b, ip->line);
-    int64_t r = 0;
-    switch (k) {
-    case AR_ADD: r = x + y; break;
-    case AR_SUB: r = x - y; break;
-    case AR_MUL: r = x * y; break;
-    case AR_DIV:
-        if (!y) fatal_at(ip->line, "division by zero");
-        r = x / y;
-        break;
-    default:
-        if (!y) fatal_at(ip->line, "division by zero");
-        r = x % y;
-        break;
-    }
-    valstack_push(st, make_i64(r));
+    valstack_push(st, make_i64(val_as_i64(a) + val_as_i64(b)));
     NEXT();
 }
+L_ADD_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_f64(a.as.f64 + b.as.f64));
+    NEXT();
+}
+L_SUB_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) - val_as_i64(b)));
+    NEXT();
+}
+L_SUB_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_f64(a.as.f64 - b.as.f64));
+    NEXT();
+}
+L_MUL_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) * val_as_i64(b)));
+    NEXT();
+}
+L_MUL_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_f64(a.as.f64 * b.as.f64));
+    NEXT();
+}
+L_DIV_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    int64_t y = val_as_i64(b);
+    if (!y) fatal_at(ip->line, "division by zero");
+    valstack_push(st, make_i64(val_as_i64(a) / y));
+    NEXT();
+}
+L_DIV_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_f64(a.as.f64 / b.as.f64));
+    NEXT();
+}
+L_MOD_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    int64_t y = val_as_i64(b);
+    if (!y) fatal_at(ip->line, "modulo by zero");
+    valstack_push(st, make_i64(val_as_i64(a) % y));
+    NEXT();
+}
+
+// --- Generic arithmetic: runtime type dispatch ---
+
+#define L_ARITH_BODY(op, a, b) do {                                         \
+    if ((a).type == T_F64 || (b).type == T_F64) {                           \
+        valstack_push(st, make_f64(value_to_f64(vm, (a), ip->line)          \
+                        op value_to_f64(vm, (b), ip->line)));               \
+    } else if ((a).type == T_F32 || (b).type == T_F32) {                    \
+        valstack_push(st, make_f32((float)(value_to_f64(vm,(a),ip->line)    \
+                        op value_to_f64(vm,(b),ip->line))));                \
+    } else {                                                                \
+        valstack_push(st, make_i64(get_i64(vm,(a),ip->line)                \
+                        op get_i64(vm,(b),ip->line)));                      \
+    }                                                                       \
+} while(0)
+
+L_ADD: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    L_ARITH_BODY(+, a, b);
+    NEXT();
+}
+L_SUB: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    L_ARITH_BODY(-, a, b);
+    NEXT();
+}
+L_MUL: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    L_ARITH_BODY(*, a, b);
+    NEXT();
+}
+L_DIV: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    if (b.type == T_F64) {
+        valstack_push(st, make_f64(value_to_f64(vm, a, ip->line) / b.as.f64));
+    } else if (b.type == T_F32) {
+        valstack_push(st, make_f32((float)(value_to_f64(vm, a, ip->line) / b.as.f32)));
+    } else {
+        int64_t y = get_i64(vm, b, ip->line);
+        if (!y) fatal_at(ip->line, "division by zero");
+        valstack_push(st, make_i64(get_i64(vm, a, ip->line) / y));
+    }
+    NEXT();
+}
+L_MOD: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    int64_t x = get_i64(vm, a, ip->line);
+    int64_t y = get_i64(vm, b, ip->line);
+    if (!y) fatal_at(ip->line, "modulo by zero");
+    valstack_push(st, make_i64(x % y));
+    NEXT();
+}
+
+// --- Typed comparison: fast path ---
+
+L_EQ_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(val_as_i64(a) == val_as_i64(b)));
+    NEXT();
+}
+L_EQ_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(a.as.f64 == b.as.f64));
+    NEXT();
+}
+L_NE_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(val_as_i64(a) != val_as_i64(b)));
+    NEXT();
+}
+L_NE_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(a.as.f64 != b.as.f64));
+    NEXT();
+}
+L_LT_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(val_as_i64(a) < val_as_i64(b)));
+    NEXT();
+}
+L_LT_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(a.as.f64 < b.as.f64));
+    NEXT();
+}
+L_GT_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(val_as_i64(a) > val_as_i64(b)));
+    NEXT();
+}
+L_GT_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(a.as.f64 > b.as.f64));
+    NEXT();
+}
+L_LE_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(val_as_i64(a) <= val_as_i64(b)));
+    NEXT();
+}
+L_LE_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(a.as.f64 <= b.as.f64));
+    NEXT();
+}
+L_GE_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(val_as_i64(a) >= val_as_i64(b)));
+    NEXT();
+}
+L_GE_F64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(a.as.f64 >= b.as.f64));
+    NEXT();
+}
+
+// --- Generic comparison: runtime type dispatch ---
 
 #define CMP_RESULT(x, y)                                                       \
     (k == CMP_EQ ? (x) == (y)                                                  \
@@ -720,26 +905,35 @@ L_ARITH: {
      : k == CMP_LE ? (x) <= (y)                                                \
                    : (x) >= (y))
 
-L_CMP: {
-    Value b = valstack_pop(st, ip->text);
-    Value a = valstack_pop(st, ip->text);
-    int k = (int)ip->u.i;
-    bool r;
-    if (a.type == T_F64 && b.type == T_F64) {
-        r = CMP_RESULT(a.as.f64, b.as.f64);
-    } else if (a.type == T_F32 && b.type == T_F32) {
-        r = CMP_RESULT((double)a.as.f32, (double)b.as.f32);
-    } else if (is_numeric(a.type) && is_numeric(b.type)) {
-        r = CMP_RESULT(val_as_i64(a), val_as_i64(b));
-    } else {
-        fatal_at(ip->line, "comparison requires equal scalar types, got %s",
-                 type_name(a.type));
-    }
-    valstack_push(st, make_bool(r));
-    NEXT();
-}
+#define DISPATCH_CMP(cmp_k) do {                                              \
+    int k = (cmp_k);                                                          \
+    Value b = valstack_pop(st, ip->text);                                     \
+    Value a = valstack_pop(st, ip->text);                                     \
+    bool r;                                                                   \
+    if (a.type == T_F64 && b.type == T_F64) {                                 \
+        r = CMP_RESULT(a.as.f64, b.as.f64);                                  \
+    } else if (a.type == T_F32 && b.type == T_F32) {                          \
+        r = CMP_RESULT((double)a.as.f32, (double)b.as.f32);                  \
+    } else if (is_numeric(a.type) && is_numeric(b.type)) {                    \
+        r = CMP_RESULT(val_as_i64(a), val_as_i64(b));                        \
+    } else {                                                                  \
+        fatal_at(ip->line, "comparison requires equal scalar types, got %s", \
+                 type_name(a.type));                                          \
+    }                                                                         \
+    valstack_push(st, make_bool(r));                                          \
+    NEXT();                                                                   \
+} while(0)
+
+L_EQ: { DISPATCH_CMP(CMP_EQ); }
+L_NE: { DISPATCH_CMP(CMP_NE); }
+L_LT: { DISPATCH_CMP(CMP_LT); }
+L_GT: { DISPATCH_CMP(CMP_GT); }
+L_LE: { DISPATCH_CMP(CMP_LE); }
+L_GE: { DISPATCH_CMP(CMP_GE); }
 
 #undef CMP_RESULT
+
+// --- Bitwise ---
 
 L_BITNOT: {
     Value a = valstack_pop(st, ip->text);
@@ -751,6 +945,39 @@ L_LOGNOT: {
     valstack_push(st, make_bool(!is_true(vm, a, ip->line)));
     NEXT();
 }
+// Typed i64 shifts
+L_SHL_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) << val_as_i64(b)));
+    NEXT();
+}
+L_SHR_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) >> val_as_i64(b)));
+    NEXT();
+}
+// Typed i64 bitwise binary
+L_AND_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) & val_as_i64(b)));
+    NEXT();
+}
+L_OR_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) | val_as_i64(b)));
+    NEXT();
+}
+L_XOR_I64: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) ^ val_as_i64(b)));
+    NEXT();
+}
+// Generic shifts/bitwise (runtime type dispatch via val_as_i64)
 L_SHL: {
     Value b = valstack_pop(st, ip->text);
     Value a = valstack_pop(st, ip->text);
@@ -763,19 +990,19 @@ L_SHR: {
     valstack_push(st, make_i64(val_as_i64(a) >> val_as_i64(b)));
     NEXT();
 }
-L_BITAND: {
+L_AND: {
     Value b = valstack_pop(st, ip->text);
     Value a = valstack_pop(st, ip->text);
     valstack_push(st, make_i64(val_as_i64(a) & val_as_i64(b)));
     NEXT();
 }
-L_BITOR: {
+L_OR: {
     Value b = valstack_pop(st, ip->text);
     Value a = valstack_pop(st, ip->text);
     valstack_push(st, make_i64(val_as_i64(a) | val_as_i64(b)));
     NEXT();
 }
-L_BITXOR: {
+L_XOR: {
     Value b = valstack_pop(st, ip->text);
     Value a = valstack_pop(st, ip->text);
     valstack_push(st, make_i64(val_as_i64(a) ^ val_as_i64(b)));
@@ -887,6 +1114,7 @@ L_WRITE: {
     case T_F64: memcpy(m->data + o, &val.as.f64, 8); break;
     case T_BOOL: m->data[o] = val.as.b ? 1 : 0; break;
     case T_CHAR: m->data[o] = val.as.c; break;
+    case T_NONE: fatal_at(ip->line, "write@ with unknown type"); break;
     }
     NEXT();
 }

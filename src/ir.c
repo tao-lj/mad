@@ -83,7 +83,22 @@ typedef struct {
     // — declared-name set for LOAD/DECLARE disambiguation —
     char **declared;
     size_t declared_n, declared_cap;
+    // — compile-time type stack for typed opcode emission —
+    TypeKind *ty_stack;
+    size_t ty_n, ty_cap;
 } IrBuilder;
+
+// Compile-time type stack helpers.
+static void tys_push(IrBuilder *b, TypeKind t) {
+    VEC_GROW(b->ty_stack, b->ty_n, b->ty_cap, TypeKind);
+    b->ty_stack[b->ty_n++] = t;
+}
+static bool tys_pop2(IrBuilder *b, TypeKind *a, TypeKind *bb) {
+    if (b->ty_n < 2) return false;
+    *bb = b->ty_stack[--b->ty_n];
+    *a  = b->ty_stack[--b->ty_n];
+    return true;
+}
 
 static void irb_own(IrBuilder *b, char *s) {
     VEC_GROW(b->fn->owned, b->fn->owned_n, b->fn->owned_cap, char *);
@@ -129,6 +144,7 @@ static void irb_flush(IrBuilder *b) {
     b->v[idx].label_idx = b->pending_label;
     b->pending_label = -1;
     b->pending_tok = NULL;
+    b->ty_n = 0;  // clear compile-time type stack at control flow boundary
 }
 
 static void irb_const(IrBuilder *b, IrKind kind, const Token *t, uint64_t payload) {
@@ -141,6 +157,7 @@ static void irb_static_jump(IrBuilder *b, IrKind kind, const Token *t,
     size_t idx = irb_emit(b, kind, t);
     b->v[idx].aux = label_id;
     b->v[idx].label_idx = label_id;
+    b->ty_n = 0;  // clear compile-time type stack at control flow boundary
     VEC_GROW(b->fix, b->fix_n, b->fix_cap, IrFixup);
     b->fix[b->fix_n].ir_idx  = idx;
     b->fix[b->fix_n].map_idx = target->token_index - b->fn->body_start;
@@ -181,6 +198,7 @@ static void irb_word(IrBuilder *b, const Token *t) {
             size_t idx = irb_emit(b, IR_LABEL_DEF, t);
             b->v[idx].label_idx = (int64_t)(ls - b->fn->labels.v);
         }
+        b->ty_n = 0;  // clear compile-time type stack at basic block boundary
         return;
     }
 
@@ -213,45 +231,124 @@ static void irb_word(IrBuilder *b, const Token *t) {
     }
     irb_flush(b);
 
-    if (word_is(s, "ret"))    { irb_emit(b, IR_RET, t); return; }
-    if (word_is(s, "halt"))   { irb_emit(b, IR_HALT, t); return; }
-    if (word_is(s, "dup"))    { irb_emit(b, IR_DUP, t); return; }
-    if (word_is(s, "drop"))   { irb_emit(b, IR_DROP, t); return; }
-    if (word_is(s, "swap"))   { irb_emit(b, IR_SWAP, t); return; }
+    if (word_is(s, "ret"))    { irb_emit(b, IR_RET, t); b->ty_n = 0; return; }
+    if (word_is(s, "halt"))   { irb_emit(b, IR_HALT, t); b->ty_n = 0; return; }
+    if (word_is(s, "dup"))    {
+        irb_emit(b, IR_DUP, t);
+        if (b->ty_n >= 1) { TypeKind top = b->ty_stack[b->ty_n - 1]; tys_push(b, top); }
+        return;
+    }
+    if (word_is(s, "drop"))   { irb_emit(b, IR_DROP, t); if (b->ty_n >= 1) b->ty_n--; return; }
+    if (word_is(s, "swap"))   {
+        irb_emit(b, IR_SWAP, t);
+        if (b->ty_n >= 2) { TypeKind a = b->ty_stack[b->ty_n - 2]; b->ty_stack[b->ty_n - 2] = b->ty_stack[b->ty_n - 1]; b->ty_stack[b->ty_n - 1] = a; }
+        return;
+    }
 
     static const char *arith_words[] = {"+", "-", "*", "/", "%"};
-    for (int k = AR_ADD; k <= AR_MOD; ++k) {
+    for (int k = 0; k <= 4; ++k) {
         if (word_is(s, arith_words[k])) {
-            size_t idx = irb_emit(b, IR_ARITH, t);
-            b->v[idx].u.i = k;
+            TypeKind a, bb;
+            if (tys_pop2(b, &a, &bb) && a == bb) {
+                if (type_is_i64(a)) {
+                    static const IrKind tk[] = {IR_ADD_I64, IR_SUB_I64, IR_MUL_I64, IR_DIV_I64, IR_MOD_I64};
+                    size_t idx = irb_emit(b, tk[k], t);
+                    b->v[idx].ty = T_I64; tys_push(b, T_I64);
+                    return;
+                }
+                if (type_is_f64(a) && k < 4) {
+                    static const IrKind fk[] = {IR_ADD_F64, IR_SUB_F64, IR_MUL_F64, IR_DIV_F64};
+                    size_t idx = irb_emit(b, fk[k], t);
+                    b->v[idx].ty = T_F64; tys_push(b, T_F64);
+                    return;
+                }
+            }
+            // Generic fallback.
+            static const IrKind gk[] = {IR_ADD, IR_SUB, IR_MUL, IR_DIV, IR_MOD};
+            irb_emit(b, gk[k], t);
+            tys_push(b, T_NONE);
             return;
         }
     }
     static const char *cmp_words[] = {"==", "!=", "<", ">", "<=", ">="};
-    for (int k = CMP_EQ; k <= CMP_GE; ++k) {
+    for (int k = 0; k <= 5; ++k) {
         if (word_is(s, cmp_words[k])) {
-            size_t idx = irb_emit(b, IR_CMP, t);
-            b->v[idx].u.i = k;
+            TypeKind a, bb;
+            if (tys_pop2(b, &a, &bb) && a == bb) {
+                if (type_is_i64(a)) {
+                    static const IrKind tk[] = {IR_EQ_I64, IR_NE_I64, IR_LT_I64, IR_GT_I64, IR_LE_I64, IR_GE_I64};
+                    size_t idx = irb_emit(b, tk[k], t);
+                    b->v[idx].ty = T_BOOL; tys_push(b, T_BOOL);
+                    return;
+                }
+                if (type_is_f64(a)) {
+                    static const IrKind fk[] = {IR_EQ_F64, IR_NE_F64, IR_LT_F64, IR_GT_F64, IR_LE_F64, IR_GE_F64};
+                    size_t idx = irb_emit(b, fk[k], t);
+                    b->v[idx].ty = T_BOOL; tys_push(b, T_BOOL);
+                    return;
+                }
+            }
+            // Generic fallback.
+            static const IrKind gk[] = {IR_EQ, IR_NE, IR_LT, IR_GT, IR_LE, IR_GE};
+            irb_emit(b, gk[k], t);
+            tys_push(b, T_BOOL);
             return;
         }
     }
 
     if (word_is(s, "="))   { irb_emit(b, IR_ASSIGN, t); return; }
 
-    if (word_is(s, "~"))   { irb_emit(b, IR_BITNOT, t); return; }
-    if (word_is(s, "!"))   { irb_emit(b, IR_LOGNOT, t); return; }
-    if (word_is(s, "<<"))  { irb_emit(b, IR_SHL, t); return; }
-    if (word_is(s, ">>"))  { irb_emit(b, IR_SHR, t); return; }
-    if (word_is(s, "&"))   { irb_emit(b, IR_BITAND, t); return; }
-    if (word_is(s, "|"))   { irb_emit(b, IR_BITOR, t); return; }
-    if (word_is(s, "^"))   { irb_emit(b, IR_BITXOR, t); return; }
-    if (word_is(s, "&&"))  { irb_emit(b, IR_LOGAND, t); return; }
-    if (word_is(s, "||"))  { irb_emit(b, IR_LOGOR, t); return; }
+    if (word_is(s, "~")) {
+        TypeKind a;
+        if (b->ty_n >= 1 && type_is_integer(b->ty_stack[b->ty_n - 1])) {
+            a = b->ty_stack[b->ty_n - 1];
+            size_t idx = irb_emit(b, IR_BITNOT, t);
+            b->v[idx].ty = type_is_i64(a) ? T_I64 : T_I64;
+            b->ty_stack[b->ty_n - 1] = T_I64;
+        } else {
+            irb_emit(b, IR_BITNOT, t);
+            if (b->ty_n >= 1) b->ty_stack[b->ty_n - 1] = T_I64;
+        }
+        return;
+    }
+    if (word_is(s, "!")) {
+        irb_emit(b, IR_LOGNOT, t);
+        if (b->ty_n >= 1) b->ty_stack[b->ty_n - 1] = T_BOOL;
+        return;
+    }
+    if (word_is(s, "<<") || word_is(s, ">>")) {
+        TypeKind a, bb;
+        bool is_shl = word_is(s, "<<");
+        if (tys_pop2(b, &a, &bb) && type_is_integer(a) && type_is_integer(bb)) {
+            size_t idx = irb_emit(b, is_shl ? IR_SHL_I64 : IR_SHR_I64, t);
+            b->v[idx].ty = T_I64; tys_push(b, T_I64);
+        } else {
+            irb_emit(b, is_shl ? IR_SHL : IR_SHR, t);
+            tys_push(b, T_NONE);
+        }
+        return;
+    }
+    if (word_is(s, "&") || word_is(s, "|") || word_is(s, "^")) {
+        TypeKind a, bb;
+        bool is_and = word_is(s, "&"), is_or = word_is(s, "|");
+        if (tys_pop2(b, &a, &bb) && type_is_integer(a) && type_is_integer(bb)) {
+            IrKind k = is_and ? IR_AND_I64 : (is_or ? IR_OR_I64 : IR_XOR_I64);
+            size_t idx = irb_emit(b, k, t);
+            b->v[idx].ty = T_I64; tys_push(b, T_I64);
+        } else {
+            IrKind k = is_and ? IR_AND : (is_or ? IR_OR : IR_XOR);
+            irb_emit(b, k, t);
+            tys_push(b, T_NONE);
+        }
+        return;
+    }
+    if (word_is(s, "&&"))  { irb_emit(b, IR_LOGAND, t); tys_push(b, T_BOOL); return; }
+    if (word_is(s, "||"))  { irb_emit(b, IR_LOGOR, t);  tys_push(b, T_BOOL); return; }
 
-    if (word_is(s, "call")){ irb_emit(b, IR_CALL_IND, t); return; }
-    if (is_jz)  { irb_emit(b, IR_JZ_DYN, t);  return; }
-    if (is_jnz) { irb_emit(b, IR_JNZ_DYN, t); return; }
-    if (is_jmp) { irb_emit(b, IR_JMP_DYN, t); return; }
+    if (word_is(s, "call")){ irb_emit(b, IR_CALL_IND, t); tys_push(b, T_NONE); return; }
+    if (is_jz)  { irb_emit(b, IR_JZ_DYN, t);  b->ty_n = 0; return; }
+    if (is_jnz) { irb_emit(b, IR_JNZ_DYN, t); b->ty_n = 0; return; }
+    if (is_jmp) { irb_emit(b, IR_JMP_DYN, t); b->ty_n = 0; return; }
 
     if (strncmp(s, "mread@", 6) == 0) {
         size_t idx = irb_emit(b, IR_MREAD, t);
@@ -299,6 +396,8 @@ static void irb_word(IrBuilder *b, const Token *t) {
     b->v[idx].ty = ann;
     b->v[idx].has_ty = has_ty;
     if (vk == IR_DECLARE) irb_declare(b, b->v[idx].u.name);
+    // Push compile-time type for typed opcode emission.
+    tys_push(b, has_ty ? ann : T_NONE);
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +426,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             size_t idx = irb_emit(&b, IR_CONST_I64, t);
             b.v[idx].u.i = strtoll(t->text, NULL, 10);
             b.prev_tok = t;
+            tys_push(&b, T_I64);
             ++i;
             break;
         }
@@ -335,6 +435,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             size_t idx = irb_emit(&b, IR_CONST_U64, t);
             b.v[idx].u.u = strtoull(t->text + 2, NULL, 10);
             b.prev_tok = t;
+            tys_push(&b, T_U64);
             ++i;
             break;
         }
@@ -343,6 +444,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             size_t idx = irb_emit(&b, IR_CONST_F64, t);
             b.v[idx].u.d = strtod(t->text, NULL);
             b.prev_tok = t;
+            tys_push(&b, T_F64);
             ++i;
             break;
         }
@@ -350,6 +452,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             irb_flush(&b);
             irb_const(&b, IR_CONST_STR, t, compile_string_literal(vm, t));
             b.prev_tok = t;
+            tys_push(&b, T_MEM);
             ++i;
             break;
         case TOK_CHAR: {
@@ -357,6 +460,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             size_t idx = irb_emit(&b, IR_CONST_I8, t);
             b.v[idx].u.i = (int64_t)(uint8_t)t->text[0];
             b.prev_tok = t;
+            tys_push(&b, T_CHAR);
             ++i;
             break;
         }
@@ -397,6 +501,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             default: break;
             }
             b.prev_tok = t;
+            tys_push(&b, ty);
             ++i;
             break;
         }
@@ -498,6 +603,18 @@ static bool cmp_fold(int op, int64_t a, int64_t b) {
     return false;
 }
 
+static bool cmp_fold_double(int op, double a, double b) {
+    switch (op) {
+    case CMP_EQ: return a == b;
+    case CMP_NE: return a != b;
+    case CMP_LT: return a <  b;
+    case CMP_GT: return a >  b;
+    case CMP_LE: return a <= b;
+    case CMP_GE: return a >= b;
+    }
+    return false;
+}
+
 size_t ir_optimize(IrNode *ir, size_t n) {
     bool changed = true;
     while (changed) {
@@ -506,46 +623,75 @@ size_t ir_optimize(IrNode *ir, size_t n) {
             if (ir[i].kind == IR_DEAD || ir[i+1].kind == IR_DEAD ||
                 ir[i+2].kind == IR_DEAD)
                 continue;
-            // i64 arithmetic fold
-            if (ir[i].kind == IR_CONST_I64 && ir[i+1].kind == IR_CONST_I64 &&
-                ir[i+2].kind == IR_ARITH) {
-                bool safe = (ir[i+2].u.i != AR_DIV && ir[i+2].u.i != AR_MOD)
-                         || ir[i+1].u.i != 0;
-                if (safe) {
+            // i64 arithmetic fold (typed path)
+            if (ir[i].kind == IR_CONST_I64 && ir[i+1].kind == IR_CONST_I64) {
+                IrKind k = ir[i+2].kind;
+                bool is_div = (k == IR_DIV_I64 || k == IR_MOD_I64);
+                if (is_div && ir[i+1].u.i == 0) continue;
+                if (k == IR_ADD_I64 || k == IR_SUB_I64 || k == IR_MUL_I64 ||
+                    k == IR_DIV_I64 || k == IR_MOD_I64) {
+                    int op = (k == IR_ADD_I64) ? AR_ADD : (k == IR_SUB_I64) ? AR_SUB :
+                             (k == IR_MUL_I64) ? AR_MUL : (k == IR_DIV_I64) ? AR_DIV : AR_MOD;
                     ir[i].kind   = IR_DEAD;
                     ir[i+1].kind = IR_DEAD;
                     ir[i+2].kind = IR_CONST_I64;
-                    ir[i+2].u.i  = arith_fold(ir[i+2].u.i,
-                                               ir[i].u.i, ir[i+1].u.i);
+                    ir[i+2].u.i  = arith_fold(op, ir[i].u.i, ir[i+1].u.i);
                     changed = true;
                 }
             }
-            // i64 cmp fold
-            if (ir[i].kind == IR_CONST_I64 && ir[i+1].kind == IR_CONST_I64 &&
-                ir[i+2].kind == IR_CMP) {
-                ir[i].kind   = IR_DEAD;
-                ir[i+1].kind = IR_DEAD;
-                ir[i+2].kind = IR_CONST_BOOL;
-                ir[i+2].u.i  = cmp_fold(ir[i+2].u.i,
-                                         ir[i].u.i, ir[i+1].u.i);
-                changed = true;
+            // i64 comparison fold (typed path)
+            if (ir[i].kind == IR_CONST_I64 && ir[i+1].kind == IR_CONST_I64) {
+                IrKind k = ir[i+2].kind;
+                int op = -1;
+                if (k == IR_EQ_I64) op = CMP_EQ;
+                else if (k == IR_NE_I64) op = CMP_NE;
+                else if (k == IR_LT_I64) op = CMP_LT;
+                else if (k == IR_GT_I64) op = CMP_GT;
+                else if (k == IR_LE_I64) op = CMP_LE;
+                else if (k == IR_GE_I64) op = CMP_GE;
+                if (op >= 0) {
+                    ir[i].kind   = IR_DEAD;
+                    ir[i+1].kind = IR_DEAD;
+                    ir[i+2].kind = IR_CONST_BOOL;
+                    ir[i+2].u.i  = cmp_fold(op, ir[i].u.i, ir[i+1].u.i);
+                    changed = true;
+                }
             }
-            // f64 arithmetic fold
-            if (ir[i].kind == IR_CONST_F64 && ir[i+1].kind == IR_CONST_F64 &&
-                ir[i+2].kind == IR_ARITH) {
-                bool safe = (ir[i+2].u.i != AR_DIV && ir[i+2].u.i != AR_MOD)
-                         || ir[i+1].u.d != 0.0;
-                if (safe) {
-                    double a = ir[i].u.d, b = ir[i+1].u.d;
+            // f64 arithmetic fold (typed path)
+            if (ir[i].kind == IR_CONST_F64 && ir[i+1].kind == IR_CONST_F64) {
+                IrKind k = ir[i+2].kind;
+                bool is_div = (k == IR_DIV_F64);
+                if (is_div && ir[i+1].u.d == 0.0) continue;
+                if (k == IR_ADD_F64 || k == IR_SUB_F64 || k == IR_MUL_F64 || k == IR_DIV_F64) {
                     ir[i].kind   = IR_DEAD;
                     ir[i+1].kind = IR_DEAD;
                     ir[i+2].kind = IR_CONST_F64;
-                    switch (ir[i+2].u.i) {
-                    case AR_ADD: ir[i+2].u.d = a + b; break;
-                    case AR_SUB: ir[i+2].u.d = a - b; break;
-                    case AR_MUL: ir[i+2].u.d = a * b; break;
-                    default:     ir[i+2].u.d = a / b; break;
+                    double a = ir[i].u.d, b = ir[i+1].u.d;
+                    switch (k) {
+                    case IR_ADD_F64: ir[i+2].u.d = a + b; break;
+                    case IR_SUB_F64: ir[i+2].u.d = a - b; break;
+                    case IR_MUL_F64: ir[i+2].u.d = a * b; break;
+                    default:         ir[i+2].u.d = a / b; break;
                     }
+                    changed = true;
+                }
+            }
+            // f64 comparison fold (typed path)
+            if (ir[i].kind == IR_CONST_F64 && ir[i+1].kind == IR_CONST_F64) {
+                IrKind k = ir[i+2].kind;
+                int op = -1;
+                if (k == IR_EQ_F64) op = CMP_EQ;
+                else if (k == IR_NE_F64) op = CMP_NE;
+                else if (k == IR_LT_F64) op = CMP_LT;
+                else if (k == IR_GT_F64) op = CMP_GT;
+                else if (k == IR_LE_F64) op = CMP_LE;
+                else if (k == IR_GE_F64) op = CMP_GE;
+                if (op >= 0) {
+                    ir[i].kind   = IR_DEAD;
+                    ir[i+1].kind = IR_DEAD;
+                    ir[i+2].kind = IR_CONST_BOOL;
+                    double a = ir[i].u.d, b = ir[i+1].u.d;
+                    ir[i+2].u.i = cmp_fold_double(op, a, b);
                     changed = true;
                 }
             }
@@ -653,8 +799,31 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
         stack_push(stack, ir->ty);
         return true;
 
-    // — arithmetic: T T → T —
-    case IR_ARITH:
+    // — typed arithmetic: pops two, pushes result type —
+    case IR_ADD_I64: case IR_SUB_I64: case IR_MUL_I64:
+    case IR_DIV_I64: case IR_MOD_I64:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before arith"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before arith"); return false; }
+        if (a != T_I64 || b != T_I64) {
+            fprintf(stderr, "check: expected i64 operands for '%s', got %s %s\n",
+                    ir->text, type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_I64);
+        return true;
+    case IR_ADD_F64: case IR_SUB_F64: case IR_MUL_F64: case IR_DIV_F64:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before arith"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before arith"); return false; }
+        if (a != T_F64 || b != T_F64) {
+            fprintf(stderr, "check: expected f64 operands for '%s', got %s %s\n",
+                    ir->text, type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_F64);
+        return true;
+
+    // — generic arithmetic: T T → T (runtime type check) —
+    case IR_ADD: case IR_SUB: case IR_MUL: case IR_DIV: case IR_MOD:
         if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before arith"); return false; }
         if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before arith"); return false; }
         if (a != b) {
@@ -670,8 +839,32 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
         stack_push(stack, a);
         return true;
 
-    // — comparison: T T → bool —
-    case IR_CMP:
+    // — typed comparison: pops two, pushes bool —
+    case IR_EQ_I64: case IR_NE_I64: case IR_LT_I64: case IR_GT_I64:
+    case IR_LE_I64: case IR_GE_I64:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before cmp"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before cmp"); return false; }
+        if (a != T_I64 || b != T_I64) {
+            fprintf(stderr, "check: expected i64 operands for '%s', got %s %s\n",
+                    ir->text, type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_BOOL);
+        return true;
+    case IR_EQ_F64: case IR_NE_F64: case IR_LT_F64: case IR_GT_F64:
+    case IR_LE_F64: case IR_GE_F64:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before cmp"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before cmp"); return false; }
+        if (a != T_F64 || b != T_F64) {
+            fprintf(stderr, "check: expected f64 operands for '%s', got %s %s\n",
+                    ir->text, type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_BOOL);
+        return true;
+
+    // — generic comparison: T T → bool (runtime type check) —
+    case IR_EQ: case IR_NE: case IR_LT: case IR_GT: case IR_LE: case IR_GE:
         if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before cmp"); return false; }
         if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before cmp"); return false; }
         if (a != b) {
@@ -686,7 +879,7 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
     // — bitwise NOT: T → i64 (integer types only) —
     case IR_BITNOT:
         if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before '~'"); return false; }
-        if (!is_numeric(a) || a == T_F32 || a == T_F64) {
+        if (!type_is_integer(a)) {
             fprintf(stderr, "check: '~' on non-integer type %s\n", type_name(a));
             return false;
         }
@@ -703,33 +896,57 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
         stack_push(stack, T_BOOL);
         return true;
 
-    // — shifts: T T → i64 (integer types only) —
+    // — typed shifts: i64 i64 → i64 —
+    case IR_SHL_I64: case IR_SHR_I64:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before shift"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before shift"); return false; }
+        if (a != T_I64 || b != T_I64) {
+            fprintf(stderr, "check: expected i64 operands for '%s', got %s %s\n",
+                    ir->text, type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_I64);
+        return true;
+
+    // — generic shifts: T T → i64 (integer types only) —
     case IR_SHL:
     case IR_SHR:
         if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before shift"); return false; }
         if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before shift"); return false; }
-        if (!is_numeric(a) || a == T_F32 || a == T_F64) {
+        if (!type_is_integer(a)) {
             fprintf(stderr, "check: shift on non-integer type %s\n", type_name(a));
             return false;
         }
-        if (!is_numeric(b) || b == T_F32 || b == T_F64) {
+        if (!type_is_integer(b)) {
             fprintf(stderr, "check: shift amount must be integer, got %s\n", type_name(b));
             return false;
         }
         stack_push(stack, T_I64);
         return true;
 
-    // — bitwise binary: T T → i64 (integer types only) —
-    case IR_BITAND:
-    case IR_BITOR:
-    case IR_BITXOR:
+    // — typed bitwise binary: i64 i64 → i64 —
+    case IR_AND_I64: case IR_OR_I64: case IR_XOR_I64:
         if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before bitwise op"); return false; }
         if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before bitwise op"); return false; }
-        if (!is_numeric(a) || a == T_F32 || a == T_F64) {
+        if (a != T_I64 || b != T_I64) {
+            fprintf(stderr, "check: expected i64 operands for '%s', got %s %s\n",
+                    ir->text, type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_I64);
+        return true;
+
+    // — generic bitwise binary: T T → i64 (integer types only) —
+    case IR_AND:
+    case IR_OR:
+    case IR_XOR:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before bitwise op"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before bitwise op"); return false; }
+        if (!type_is_integer(a)) {
             fprintf(stderr, "check: bitwise op on non-integer type %s\n", type_name(a));
             return false;
         }
-        if (!is_numeric(b) || b == T_F32 || b == T_F64) {
+        if (!type_is_integer(b)) {
             fprintf(stderr, "check: bitwise op on non-integer type %s\n", type_name(b));
             return false;
         }
@@ -1042,16 +1259,56 @@ void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
             op->ty = ir[i].ty;
             op->has_ty = ir[i].has_ty;
             break;
-        case IR_ARITH: op->code = dt[OP_ARITH]; op->u.i = ir[i].u.i; break;
-        case IR_CMP:   op->code = dt[OP_CMP];   op->u.i = ir[i].u.i; break;
+        // Typed arithmetic
+        case IR_ADD_I64: op->code = dt[OP_ADD_I64]; break;
+        case IR_ADD_F64: op->code = dt[OP_ADD_F64]; break;
+        case IR_SUB_I64: op->code = dt[OP_SUB_I64]; break;
+        case IR_SUB_F64: op->code = dt[OP_SUB_F64]; break;
+        case IR_MUL_I64: op->code = dt[OP_MUL_I64]; break;
+        case IR_MUL_F64: op->code = dt[OP_MUL_F64]; break;
+        case IR_DIV_I64: op->code = dt[OP_DIV_I64]; break;
+        case IR_DIV_F64: op->code = dt[OP_DIV_F64]; break;
+        case IR_MOD_I64: op->code = dt[OP_MOD_I64]; break;
+        // Generic arithmetic
+        case IR_ADD: op->code = dt[OP_ADD]; break;
+        case IR_SUB: op->code = dt[OP_SUB]; break;
+        case IR_MUL: op->code = dt[OP_MUL]; break;
+        case IR_DIV: op->code = dt[OP_DIV]; break;
+        case IR_MOD: op->code = dt[OP_MOD]; break;
+        // Typed comparison
+        case IR_EQ_I64: op->code = dt[OP_EQ_I64]; break;
+        case IR_EQ_F64: op->code = dt[OP_EQ_F64]; break;
+        case IR_NE_I64: op->code = dt[OP_NE_I64]; break;
+        case IR_NE_F64: op->code = dt[OP_NE_F64]; break;
+        case IR_LT_I64: op->code = dt[OP_LT_I64]; break;
+        case IR_LT_F64: op->code = dt[OP_LT_F64]; break;
+        case IR_GT_I64: op->code = dt[OP_GT_I64]; break;
+        case IR_GT_F64: op->code = dt[OP_GT_F64]; break;
+        case IR_LE_I64: op->code = dt[OP_LE_I64]; break;
+        case IR_LE_F64: op->code = dt[OP_LE_F64]; break;
+        case IR_GE_I64: op->code = dt[OP_GE_I64]; break;
+        case IR_GE_F64: op->code = dt[OP_GE_F64]; break;
+        // Generic comparison
+        case IR_EQ: op->code = dt[OP_EQ]; break;
+        case IR_NE: op->code = dt[OP_NE]; break;
+        case IR_LT: op->code = dt[OP_LT]; break;
+        case IR_GT: op->code = dt[OP_GT]; break;
+        case IR_LE: op->code = dt[OP_LE]; break;
+        case IR_GE: op->code = dt[OP_GE]; break;
         case IR_ASSIGN: op->code = dt[OP_ASSIGN]; break;
+        // Bitwise (typed i64 + generic)
         case IR_BITNOT: op->code = dt[OP_BITNOT]; break;
         case IR_LOGNOT: op->code = dt[OP_LOGNOT]; break;
-        case IR_SHL:    op->code = dt[OP_SHL];    break;
-        case IR_SHR:    op->code = dt[OP_SHR];    break;
-        case IR_BITAND: op->code = dt[OP_BITAND]; break;
-        case IR_BITOR:  op->code = dt[OP_BITOR];  break;
-        case IR_BITXOR: op->code = dt[OP_BITXOR]; break;
+        case IR_SHL_I64: op->code = dt[OP_SHL_I64]; break;
+        case IR_SHR_I64: op->code = dt[OP_SHR_I64]; break;
+        case IR_AND_I64: op->code = dt[OP_AND_I64]; break;
+        case IR_OR_I64:  op->code = dt[OP_OR_I64];  break;
+        case IR_XOR_I64: op->code = dt[OP_XOR_I64]; break;
+        case IR_SHL: op->code = dt[OP_SHL]; break;
+        case IR_SHR: op->code = dt[OP_SHR]; break;
+        case IR_AND: op->code = dt[OP_AND]; break;
+        case IR_OR:  op->code = dt[OP_OR];  break;
+        case IR_XOR: op->code = dt[OP_XOR]; break;
         case IR_LOGAND: op->code = dt[OP_LOGAND]; break;
         case IR_LOGOR:  op->code = dt[OP_LOGOR];  break;
         case IR_ALLOC:  op->code = dt[OP_ALLOC];  break;
