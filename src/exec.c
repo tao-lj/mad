@@ -19,7 +19,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-static bool is_top_level(Frame *fr) { return strcmp(fr->fn->name, "<top>") == 0; }
+static bool fname_is_module(const char *n) {
+    return strcmp(n, "<top>") == 0 || strcmp(n, "<import>") == 0;
+}
+
+static bool is_top_level(Frame *fr) { return fname_is_module(fr->fn->name); }
 
 static bool word_is(const char *s, const char *kw) { return strcmp(s, kw) == 0; }
 
@@ -311,6 +315,68 @@ static void declare_variable(VM *vm, Frame *fr, const char *base, TypeKind ty,
     }
 }
 
+// ---------- Imports ----------
+
+// "import" consumes a memptr holding a NUL-terminated path. Relative paths
+// resolve against the directory of the importing file; absolute paths are
+// taken verbatim. Imported tokens are appended to the shared token stream,
+// their definitions are discovered, and the module's top level runs in its
+// own frame -- so its global variables and functions become visible to the
+// importer. Only module frames may import: a live function frame would hold
+// pointers into vm.funcs.v, which discovery reallocates.
+//
+// Each file is imported at most once, #pragma once style: the canonical
+// path is checked against vm.imported and repeated imports are silent
+// no-ops. The main file is registered at startup, so importing it is an
+// ignored no-op too.
+static void do_import(VM *vm, size_t line) {
+    if (!is_top_level(current_frame(vm)))
+        fatal_at(line, "'import' is only allowed at top level");
+
+    Value v = valstack_pop(&vm->stack, "import");
+    if (v.type != T_MEMPTR)
+        fatal_at(line, "import expects memptr path, got %s", type_name(v.type));
+    MemObj *m = require_mem(vm, vm->memptrs.v[v.idx].mem_id, line);
+    const char *raw = (const char *)m->data;
+    if (!memchr(m->data, '\0', m->len))
+        fatal_at(line, "import path is not NUL-terminated");
+
+    char *path = path_canonical(vm->file_dir, raw);
+    if (!path) fatal_at(line, "import path too deep: '%s'", raw);
+
+    for (size_t i = 0; i < vm->imported_n; ++i) {
+        if (strcmp(vm->imported[i], path) == 0) {
+            free(path); // already imported once -- silent no-op
+            return;
+        }
+    }
+    VEC_GROW(vm->imported, vm->imported_n, vm->imported_cap, char *);
+    vm->imported[vm->imported_n++] = path;
+
+    if (++vm->import_depth > MAD_MAX_IMPORT_DEPTH)
+        fatal_at(line, "import depth exceeded (cycle?)");
+
+    FILE *probe = fopen(path, "rb");
+    if (!probe) fatal_at(line, "cannot open imported file '%s'", path);
+    fclose(probe);
+
+    char *saved_dir = vm->file_dir;
+    vm->file_dir = path_dir_of(path);
+
+    char *src = read_file(path);
+    size_t start = vm->toks.n;
+    lex_source(src, &vm->toks);
+    free(src);
+    size_t end = vm->toks.n;
+
+    vm_discover_functions_range(vm, start, end);
+    vm_execute_module(vm, "<import>", start, end);
+
+    free(vm->file_dir);
+    vm->file_dir = saved_dir;
+    vm->import_depth--;
+}
+
 // ---------- Threaded code ----------
 
 typedef enum {
@@ -325,6 +391,7 @@ typedef enum {
     OP_MREAD, OP_WRITE,
     OP_PRINT, OP_PRINTLN, OP_PRINTSTR, OP_READ,
     OP_DUP, OP_DROP, OP_SWAP, OP_ASSERT,
+    OP_IMPORT, // "import": pop memptr path, load and run a module file
     OP_CALL_FUNC, OP_CALL_IND,
     OP_JMP, OP_JZ, OP_JNZ,
     OP_JMP_DYN, OP_JZ_DYN, OP_JNZ_DYN,
@@ -545,6 +612,7 @@ static void compile_word(Compiler *c, const Token *t) {
     if (word_is(s, "println")) { emit_op(c, OP_PRINTLN, t); return; }
     if (word_is(s, "printstr")) { emit_op(c, OP_PRINTSTR, t); return; }
     if (word_is(s, "assert")) { emit_op(c, OP_ASSERT, t); return; }
+    if (word_is(s, "import")) { emit_op(c, OP_IMPORT, t); return; }
 
     // Fallback: variable load or implicit declaration from the stack top.
     char base[MAX_NAME];
@@ -564,7 +632,7 @@ static void compile_func(VM *vm, FuncSym *fn) {
     Compiler c = {0};
     c.vm = vm;
     c.fn = fn;
-    c.top_level = strcmp(fn->name, "<top>") == 0;
+    c.top_level = fname_is_module(fn->name);
     c.pending_label = -1;
     c.map_n = fn->body_end - fn->body_start;
     c.map = malloc((c.map_n ? c.map_n : 1) * sizeof *c.map);
@@ -649,6 +717,7 @@ done:
     for (size_t j = 0; j < c.map_n; ++j) {
         if (c.map[j] == SIZE_MAX) c.map[j] = sentinel;
     }
+    free(c.fix); // fixups are consumed above; only c.v/c.map transfer to fn
 
     fn->code = c.v;
     fn->code_n = c.n;
@@ -741,6 +810,7 @@ static void execute_code(VM *vm, FuncSym *fn) {
         disp[OP_DROP] = &&L_DROP;
         disp[OP_SWAP] = &&L_SWAP;
         disp[OP_ASSERT] = &&L_ASSERT;
+        disp[OP_IMPORT] = &&L_IMPORT;
         disp[OP_CALL_FUNC] = &&L_CALL_FUNC;
         disp[OP_CALL_IND] = &&L_CALL_IND;
         disp[OP_JMP] = &&L_JMP;
@@ -805,6 +875,15 @@ L_WORD_VAR: {
     }
     if (global_declared_in(fr, base))
         fatal_at(ip->line, "declared global variable '%s' does not exist", base);
+    // Late binding: the name may denote a function registered by a later
+    // "import", after this unit was already compiled. Functions shadow
+    // variables (compile-time priority), so prefer the call here too.
+    FuncSym *fs = vm_find_func(&vm->funcs, base);
+    if (fs) {
+        call_by_value(vm, fs, ip->line, ip->text);
+        if (vm->halted) return;
+        NEXT();
+    }
     Value init = valstack_pop(st, ip->text);
     TypeKind ty = ip->has_ty ? ip->ty : init.type;
     if (ty != init.type) {
@@ -837,6 +916,12 @@ L_REF_NAME: {
     }
     if (ip->aux2 >= 0) {
         valstack_push(st, (Value){T_FUNC, (uint64_t)ip->aux2});
+        NEXT();
+    }
+    // Late-bound '&name': the function may have arrived via a later "import".
+    FuncSym *fs = vm_find_func(&vm->funcs, name);
+    if (fs) {
+        valstack_push(st, (Value){T_FUNC, (uint64_t)(fs - vm->funcs.v)});
         NEXT();
     }
     fatal_at(ip->line, "unknown reference '&%s'", name);
@@ -1051,6 +1136,11 @@ L_ASSERT: {
     NEXT();
 }
 
+L_IMPORT:
+    do_import(vm, ip->line);
+    if (vm->halted) return;
+    NEXT();
+
 L_CALL_FUNC:
     call_by_value(vm, &vm->funcs.v[ip->u.i], ip->line, ip->text);
     if (vm->halted) return;
@@ -1133,11 +1223,11 @@ static void tcode_free_sym(FuncSym *fn) {
     fn->compiled = false;
 }
 
-void vm_run_top_level(VM *vm) {
+void vm_execute_module(VM *vm, const char *label, size_t start, size_t end) {
     FuncSym top = {0};
-    top.name = xstrdup("<top>");
-    top.body_start = 0;
-    top.body_end = vm->toks.n;
+    top.name = xstrdup(label);
+    top.body_start = start;
+    top.body_end = end;
     vm_collect_labels(vm, &top);
 
     VEC_GROW(vm->frames.v, vm->frames.n, vm->frames.cap, Frame);
@@ -1158,6 +1248,10 @@ void vm_run_top_level(VM *vm) {
     for (size_t i = 0; i < top.labels.n; ++i) free(top.labels.v[i].name);
     free(top.labels.v);
     free(top.name);
+}
+
+void vm_run_top_level(VM *vm) {
+    vm_execute_module(vm, "<top>", 0, vm->toks.n);
 }
 
 void vm_free(VM *vm) {
@@ -1186,6 +1280,9 @@ void vm_free(VM *vm) {
     }
     free(vm->funcs.v);
     free(vm->stack.v);
+    free(vm->file_dir);
+    for (size_t i = 0; i < vm->imported_n; ++i) free(vm->imported[i]);
+    free(vm->imported);
     for (size_t i = 0; i < vm->frames.n; ++i) {
         frame_release_locals(&vm->frames.v[i]);
         free(vm->frames.v[i].local_mems);

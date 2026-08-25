@@ -26,8 +26,8 @@ src/          interpreter sources
   symtab.c    function/label discovery over the token stream
   exec.c      threaded-code compiler and dispatch loop (labels-as-values)
   main.c      CLI entry point
-examples/     runnable .mad programs
-tests/        input/expected pairs used by `make test`
+examples/     one directory per program: main.mad + input + expected,
+              all run by `make test`
 ```
 
 ## Core syntax
@@ -202,20 +202,36 @@ The language design additionally reserves the smaller integer widths and `f32`; 
 
 `alloc` creates frame-lifetime memory and is released when the current function returns. `halloc` creates heap-lifetime memory and remains until `free` or program shutdown.
 
+## Imports
+
+```mad
+"lib.mad" import    // consumes a memptr path from the stack
+```
+
+`import` takes a NUL-terminated path in a `memptr` (a string literal is the usual source), reads and lexes that file, discovers its function definitions, then runs its top level — so its global variables and functions become visible to the importer. Rules:
+
+- relative paths resolve against the directory of the **importing file**, not the process CWD; absolute paths are taken verbatim;
+- only top-level code may `import` (like C's `#include`, it is a module-level operation);
+- imported files are appended to the shared token stream, so definitions are global for the rest of the run;
+- each file is imported at most once — `#pragma once` semantics, always on: repeated imports (direct, nested, or via different relative spellings) are silent no-ops, and importing the main file itself is ignored too;
+- nesting depth is capped at 64 to guard import cycles.
+
 ## Examples
 
-Runnable programs live in `examples/` and are documented in
-[`examples/README.md`](examples/README.md):
+Each `examples/<name>/` directory holds one self-contained program:
+`main.mad` (the entry, importing siblings by relative path), an optional
+`input` fed to stdin, and an `expected` reference output. See
+[`examples/README.md`](examples/README.md) for details:
 
-- `examples/nqueens.mad` — N-Queens solver: recursion, `mem` arrays, label-based control flow
-- `examples/p1038.mad` — 洛谷 P1038 [NOIP 2003 提高组] 神经网络: flat i64 arrays in `mem`, worklist graph traversal
-
-Both are wired into `make test`.
+- `branch/` — conditional jumps (`jz` / `jnz`) in both polarities
+- `import/` — nested module imports, including late-bound function references
+- `nqueens/` — N-Queens solver: recursion, `mem` arrays, label-based control flow
+- `p1038/` — 洛谷 P1038 [NOIP 2003 提高组] 神经网络: flat i64 arrays in `mem`, worklist graph traversal
 
 ## Tests
 
-`make test` runs the programs under `examples/` against fixed input/expected
-pairs in `tests/`. The examples cover:
+`make test` runs every `examples/*/main.mad` — feeding its `input` when one
+exists — and diffs stdout against its `expected`. Together the examples cover:
 
 - recursion / GCD
 - assignment and type errors
@@ -223,7 +239,8 @@ pairs in `tests/`. The examples cover:
 - indirect function calls
 - memory access
 - typed standard input
-- conditional jumps (`jz` / `jnz`) in both polarities
+- conditional jumps in both polarities
+- module imports with duplicate-import suppression and late binding
 - P1038-style graph processing
 - frame growth beyond the initial frame-vector capacity
 

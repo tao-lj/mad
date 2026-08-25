@@ -65,7 +65,14 @@ typedef struct {
     ValStack stack;
     FrameVec frames;
     bool halted;
+    char *file_dir;      // directory of the file currently being executed
+    unsigned import_depth;
+    char **imported;     // canonical paths already imported (#pragma once)
+    size_t imported_n, imported_cap;
 } VM;
+
+// Hard cap on nested "import" chains (cycle guard).
+#define MAD_MAX_IMPORT_DEPTH 64
 
 // ---------- Symbol tables ----------
 
@@ -79,11 +86,20 @@ void vm_collect_labels(VM *vm, FuncSym *fn);
 
 // ---------- Interpreter phases ----------
 
-// Scan the token stream and register all ":name ... ;" definitions.
+// Scan the whole token stream and register all ":name ... ;" definitions.
 void vm_discover_functions(VM *vm);
+
+// Scan a token range [start, end) and register all ":name ... ;" definitions
+// found inside it; used by "import" for tokens from imported files.
+void vm_discover_functions_range(VM *vm, size_t start, size_t end);
 
 // Execute top-level code; function bodies are skipped as they are reached.
 void vm_run_top_level(VM *vm);
+
+// Execute a top-level token range [start, end) in its own frame named
+// "label"; function bodies inside the range are skipped. Used both for
+// the main file and by "import".
+void vm_execute_module(VM *vm, const char *label, size_t start, size_t end);
 
 // Release every resource held by the VM.
 void vm_free(VM *vm);

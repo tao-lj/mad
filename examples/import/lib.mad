@@ -1,0 +1,6 @@
+// Library module: imports a sibling via a relative path.
+"helper.mad" import
+
+:square [x@i64]
+    x x *
+;

@@ -26,13 +26,17 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 $(BUILD_DIR):
 	mkdir -p $@
 
+EXAMPLES := $(sort $(wildcard examples/*/))
+
 test: $(TARGET)
-	@echo "== nqueens =="
-	./$(TARGET) examples/nqueens.mad < tests/nqueens.in | diff -u tests/nqueens.expected -
-	@echo "== p1038 =="
-	./$(TARGET) examples/p1038.mad < tests/p1038.in | diff -u tests/p1038.expected -
-	@echo "== branch =="
-	./$(TARGET) tests/branch.mad | diff -u tests/branch.expected -
+	@set -e; for d in $(EXAMPLES); do \
+		echo "== $$(basename $$d) =="; \
+		if [ -f "$$d/input" ]; then \
+			./$(TARGET) "$$d/main.mad" < "$$d/input" | diff -u "$$d/expected" -; \
+		else \
+			./$(TARGET) "$$d/main.mad" | diff -u "$$d/expected" -; \
+		fi; \
+	done
 	@echo "All tests passed."
 
 clean:

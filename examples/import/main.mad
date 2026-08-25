@@ -1,0 +1,14 @@
+// Nested import test: main -> lib -> helper (relative paths).
+"lib.mad" import
+
+5 square print println
+answer print println
+
+// Late binding: this file's top level was fully compiled before any of it
+// ran, so 'twice' below compiled into a plain variable word -- the runtime
+// fallback must notice the function registered by the import and call it.
+"late.mad" import
+
+7 twice print println
+
+halt

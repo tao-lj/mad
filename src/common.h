@@ -7,6 +7,7 @@
 
 #define INITIAL_CAP 64
 #define MAX_NAME 128
+#define MAX_PATH_SEGS 256
 
 // Print "MAD: out of memory" and exit with status 2.
 _Noreturn void die_oom(void);
@@ -19,6 +20,14 @@ _Noreturn void fatal_at(size_t line, const char *fmt, ...);
 
 // Read an entire file into a NUL-terminated heap buffer; exits on failure.
 char *read_file(const char *path);
+
+// Directory part of a path: "/a/b.c" -> "/a", "b.c" -> ".", "/b.c" -> "/".
+char *path_dir_of(const char *path);
+
+// Lexically resolve "raw" against directory "base" (used when raw is
+// relative): collapses "//", resolves "." and "..". Returns NULL if the
+// path has too many components.
+char *path_canonical(const char *base, const char *raw);
 
 // Double the capacity of a grow-only vector when it is full.
 #define VEC_GROW(ptr, n, cap, T) \

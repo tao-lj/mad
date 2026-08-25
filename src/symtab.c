@@ -112,21 +112,23 @@ static void parse_params(Token *toks, size_t toks_n, size_t *ip,
 }
 
 // Finds the terminating ';' of the current function definition.
-static size_t find_body_end(VM *vm, size_t start, size_t line, const char *fname) {
+static size_t find_body_end(VM *vm, size_t start, size_t end, size_t line,
+                            const char *fname) {
     // Labels are words ending in ':', so TOK_SEMI is the only terminator.
-    size_t end = start;
-    while (end < vm->toks.n && vm->toks.v[end].kind != TOK_SEMI) ++end;
-    if (end >= vm->toks.n) fatal_at(line, "unterminated function '%s'", fname);
-    return end;
+    size_t e = start;
+    while (e < end && vm->toks.v[e].kind != TOK_SEMI) ++e;
+    if (e >= end) fatal_at(line, "unterminated function '%s'", fname);
+    return e;
 }
 
-void vm_discover_functions(VM *vm) {
-    size_t i = 0;
-    while (i < vm->toks.n) {
+void vm_discover_functions_range(VM *vm, size_t start, size_t end) {
+    if (end > vm->toks.n) end = vm->toks.n;
+    size_t i = start;
+    while (i < end) {
         Token *t = &vm->toks.v[i];
         if (t->kind != TOK_COLON) { ++i; continue; }
 
-        if (i + 1 >= vm->toks.n || vm->toks.v[i + 1].kind == TOK_SEMI) {
+        if (i + 1 >= end || vm->toks.v[i + 1].kind == TOK_SEMI) {
             fatal_at(t->line, "function name expected after ':'");
         }
         ++i;
@@ -140,7 +142,7 @@ void vm_discover_functions(VM *vm) {
         if (vm->toks.v[i].kind == TOK_GLOBAL_REF) {
             split_global_names(vm->toks.v[i].text, &globals, &global_n);
             ++i;
-            if (i >= vm->toks.n || vm->toks.v[i].kind != TOK_WORD) {
+            if (i >= end || vm->toks.v[i].kind != TOK_WORD) {
                 fatal_at(t->line, "function name expected after global list");
             }
         }
@@ -157,7 +159,7 @@ void vm_discover_functions(VM *vm) {
         parse_params(vm->toks.v, vm->toks.n, &i, &params, &ptypes, &pn);
 
         size_t body_start = i;
-        size_t body_end = find_body_end(vm, body_start, t->line, fname);
+        size_t body_end = find_body_end(vm, body_start, end, t->line, fname);
 
         VEC_GROW(vm->funcs.v, vm->funcs.n, vm->funcs.cap, FuncSym);
         FuncSym *fn = &vm->funcs.v[vm->funcs.n++];
@@ -174,4 +176,8 @@ void vm_discover_functions(VM *vm) {
 
         i = body_end + 1;
     }
+}
+
+void vm_discover_functions(VM *vm) {
+    vm_discover_functions_range(vm, 0, vm->toks.n);
 }

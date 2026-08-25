@@ -1,96 +1,54 @@
 # Examples
 
-Runnable MAD programs. Build the interpreter first (`make` at the repository
-root), then run any example with:
-
-```sh
-./mad examples/<program>.mad          # reads input from stdin
-printf '4\n' | ./mad examples/nqueens.mad
-```
-
-Each program is also wired into `make test` with fixed input/expected pairs
-under `tests/`.
-
-## Style: grouping with parentheses
-
-`( )` have no semantics — the lexer treats them as whitespace. Both examples
-use them purely for readability, following one convention:
-
-- `(a b op)` — the operands of one action, e.g. `(c 1 +)`, `(r n >=)`
-- `(mem (i 8 *) mread@i64) &x =` — a load feeding an assignment
-- `(v mem off) write@i64` — all operands of a memory write
-- `(cond...) label jnz` — condition grouped, jump target outside
-
-So `(n 0 ==) done jnz` reads as *if (n == 0) goto done*, and each line stays
-one or two visual statements instead of flat assembler soup.
-
-## nqueens.mad
-
-Solves the N-Queens problem: reads `N` from stdin, prints every solution as
-an `N x N` board where `Q` marks a queen, then prints the total number of
-solutions.
-
-```sh
-$ printf '4\n' | ./mad examples/nqueens.mad
-.Q..
-...Q
-Q...
-..Q.
-
-..Q.
-Q...
-...Q
-.Q..
-
-2
-```
-
-Language features exercised:
-
-- recursion — `solve` calls itself with `row 1 +`
-- a `mem` block used as an array: the queen column for each row lives at
-  byte offset `row * 8`
-- scalar memory access via `mread@i64` / `write@i64`
-- explicit global capture on function headers: `:{n board solutions}solve`
-- parameter binding through reversed `[]` groups: `[row@i64]`
-- label-based control flow with `jnz` / `jmp`
-
-## p1038.mad
-
-A MAD implementation of 洛谷 P1038 [NOIP 2003 提高组] 神经网络
-(<https://www.luogu.com.cn/problem/P1038>). The network is a layered DAG of
-neurons; each non-input neuron's state follows
-`C_i = (Σ W_ji * C_j) - U_i`, and only neurons with `C_i > 0` propagate
-their signal. The program prints every output-layer neuron (out-degree 0)
-whose final state is greater than zero, in increasing id order, or `NULL`.
-
-Input follows the problem statement:
+Each subdirectory is one self-contained example:
 
 ```text
-n p              // neuron count, edge count
-c_1 u_1 ...      // n lines: initial state and threshold
-i j w_ij         // p lines: directed edge with weight
+examples/<name>/main.mad     entry program (imports siblings by relative path)
+examples/<name>/input        optional stdin fed to the program
+examples/<name>/expected     reference output; make test diffs against it
 ```
 
-The official sample from the problem statement produces:
+Run any example directly:
 
 ```sh
-$ printf '5 6\n1 0\n1 0\n0 1\n0 1\n0 1\n1 3 1\n1 4 1\n1 5 1\n2 3 1\n2 4 1\n2 5 1\n' | ./mad examples/p1038.mad
-3 1
-4 1
-5 1
+make                                        # build ./mad at the repo root
+./mad examples/nqueens/main.mad < examples/nqueens/input
 ```
 
-Implementation notes:
+`make test` runs every `examples/*/main.mad`, feeding `input` when present,
+and diffs stdout against `expected`.
 
-- all data structures — states `C`, thresholds `U`, in/out degree tables,
-  the worklist queue, and dense matrices `W`/`E` — are flat `mem` blocks;
-  element `i` is stored at byte offset `i * 8`, matrix cell `(i,j)` at
-  offset `(i * (n + 1) + j) * 8`
-- worklist-based topological propagation; calm neurons (`C <= 0`) still
-  release their successors so zero-signal paths never stall the traversal
-- each threshold is subtracted exactly once, after the last predecessor
-  has contributed
+## branch
 
-This example doubles as an end-to-end regression test: `tests/p1038.in`
-holds the official sample shown above.
+Conditional jumps in both polarities: `jz` branches on zero/false, `jnz`
+on non-zero/true. Four cases cover taken and not-taken for each.
+
+## import
+
+Module imports with relative-path resolution against the importing file's
+directory: `main.mad` → `lib.mad` → `helper.mad` defines a global constant;
+`late.mad` is imported after code that already references it, exercising the
+runtime fallback that resolves such names to function calls.
+
+## nqueens
+
+N-Queens solver. Reads `N` from stdin (`4` in `input`), prints every solution
+as an `N x N` board (`Q` marks a queen), then the solution count.
+
+Features exercised: recursion; a `mem` block as an array (queen column for
+row `r` at byte offset `r * 8`); `mread@i64` / `write@i64`; explicit global
+capture `:{n board solutions}solve`; reversed `[]` parameter groups; label
+control flow with `jnz` / `jmp`.
+
+## p1038
+
+MAD implementation of 洛谷 P1038 [NOIP 2003 提高组] 神经网络
+(<https://www.luogu.com.cn/problem/P1038>). A layered DAG of neurons with
+`C_i = (Σ W_ji * C_j) - U_i`; prints every output neuron whose final state
+is positive, in id order, or `NULL`. `input` holds the official sample,
+which produces `3 1`, `4 1`, `5 1`.
+
+Implementation notes: states, thresholds, degree tables, worklist queue and
+dense matrices are all flat `mem` blocks (element `i` at offset `i * 8`,
+cell `(i,j)` at `(i * (n + 1) + j) * 8`); worklist-based propagation where
+calm neurons still release successors so zero-signal paths never stall.
