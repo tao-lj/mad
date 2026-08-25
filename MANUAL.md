@@ -136,6 +136,7 @@ MAD（**MAD Ain't Disciplined**）以后缀记法 + 数据栈为核心，无语�
 | `=` | `( ptr value -- )` | 经指针赋值：先弹 ptr 再弹值 |
 | `alloc` / `halloc` | `( bytes -- mem )` | 帧 / 堆生命周期内存 |
 | `free` | `( mem/memptr -- )` | 释放；重复使用已释放内存报错 |
+| `sizeof` | `( v -- i64 )` | 标量返回类型字节数；mem/memptr 返回 mem 长度 |
 | `mread@T` | `( mem off -- v )` | 读标量；越界报错 |
 | `write@T` | `( val mem off -- )` | 写标量；越界、只读、类型不符报错 |
 | `print` / `printn` | `( v -- )` | 打印值不换行（`printn` 是别名） |

@@ -536,6 +536,7 @@ static void execute_code(VM *vm, FuncSym *fn) {
         disp[OP_ALLOC] = &&L_ALLOC;
         disp[OP_HALLOC] = &&L_HALLOC;
         disp[OP_FREE] = &&L_FREE;
+        disp[OP_SIZEOF] = &&L_SIZEOF;
         disp[OP_MREAD] = &&L_MREAD;
         disp[OP_WRITE] = &&L_WRITE;
         disp[OP_PRINT] = &&L_PRINT;
@@ -1056,6 +1057,25 @@ L_FREE: {
     free(vm->mems.v[id].data);
     vm->mems.v[id].data = NULL;
     vm->mems.v[id].len = 0;
+    NEXT();
+}
+
+L_SIZEOF: {
+    Value v = valstack_pop(st, ip->text);
+    if (v.type == T_MEM) {
+        uint64_t id = v.as.u64;
+        if (id >= vm->mems.n || vm->mems.v[id].data == NULL)
+            fatal_at(ip->line, "invalid mem");
+        valstack_push(st, make_i64((int64_t)vm->mems.v[id].len));
+    } else if (v.type == T_MEMPTR) {
+        if (v.as.u64 >= vm->memptrs.n) fatal_at(ip->line, "invalid memptr");
+        uint64_t mid = vm->memptrs.v[v.as.u64].mem_id;
+        if (mid >= vm->mems.n || vm->mems.v[mid].data == NULL)
+            fatal_at(ip->line, "invalid mem");
+        valstack_push(st, make_i64((int64_t)vm->mems.v[mid].len));
+    } else {
+        valstack_push(st, make_i64((int64_t)type_size(v.type)));
+    }
     NEXT();
 }
 

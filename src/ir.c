@@ -373,6 +373,7 @@ static void irb_word(IrBuilder *b, const Token *t) {
         return;
     }
     if (word_is(s, "free"))   { irb_emit(b, IR_FREE, t); return; }
+    if (word_is(s, "sizeof")) { irb_emit(b, IR_SIZEOF, t); tys_push(b, T_I64); return; }
 
     if (word_is(s, "print") || word_is(s, "printn")) {
         irb_emit(b, IR_PRINT, t); return;
@@ -987,6 +988,11 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
     case IR_FREE:
         if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before free"); return false; }
         return true;
+    // — sizeof: T → i64 —
+    case IR_SIZEOF:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before sizeof"); return false; }
+        stack_push(stack, T_I64);
+        return true;
 
     // — mread: T mem → val —
     case IR_MREAD:
@@ -1314,6 +1320,7 @@ void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
         case IR_ALLOC:  op->code = dt[OP_ALLOC];  break;
         case IR_HALLOC: op->code = dt[OP_HALLOC]; op->has_ty = true; break;
         case IR_FREE:   op->code = dt[OP_FREE];   break;
+        case IR_SIZEOF: op->code = dt[OP_SIZEOF]; break;
         case IR_MREAD:
             op->code = dt[OP_MREAD];
             op->ty = ir[i].ty;
