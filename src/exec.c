@@ -482,6 +482,15 @@ static void execute_code(VM *vm, FuncSym *fn) {
         disp[OP_ARITH] = &&L_ARITH;
         disp[OP_CMP] = &&L_CMP;
         disp[OP_ASSIGN] = &&L_ASSIGN;
+        disp[OP_BITNOT] = &&L_BITNOT;
+        disp[OP_LOGNOT] = &&L_LOGNOT;
+        disp[OP_SHL] = &&L_SHL;
+        disp[OP_SHR] = &&L_SHR;
+        disp[OP_BITAND] = &&L_BITAND;
+        disp[OP_BITOR] = &&L_BITOR;
+        disp[OP_BITXOR] = &&L_BITXOR;
+        disp[OP_LOGAND] = &&L_LOGAND;
+        disp[OP_LOGOR] = &&L_LOGOR;
         disp[OP_ALLOC] = &&L_ALLOC;
         disp[OP_HALLOC] = &&L_HALLOC;
         disp[OP_FREE] = &&L_FREE;
@@ -731,6 +740,59 @@ L_CMP: {
 }
 
 #undef CMP_RESULT
+
+L_BITNOT: {
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(~val_as_i64(a)));
+    NEXT();
+}
+L_LOGNOT: {
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(!is_true(vm, a, ip->line)));
+    NEXT();
+}
+L_SHL: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) << val_as_i64(b)));
+    NEXT();
+}
+L_SHR: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) >> val_as_i64(b)));
+    NEXT();
+}
+L_BITAND: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) & val_as_i64(b)));
+    NEXT();
+}
+L_BITOR: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) | val_as_i64(b)));
+    NEXT();
+}
+L_BITXOR: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_i64(val_as_i64(a) ^ val_as_i64(b)));
+    NEXT();
+}
+L_LOGAND: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(is_true(vm, a, ip->line) && is_true(vm, b, ip->line)));
+    NEXT();
+}
+L_LOGOR: {
+    Value b = valstack_pop(st, ip->text);
+    Value a = valstack_pop(st, ip->text);
+    valstack_push(st, make_bool(is_true(vm, a, ip->line) || is_true(vm, b, ip->line)));
+    NEXT();
+}
 
 L_ASSIGN: {
     Value pv = valstack_pop(st, ip->text);

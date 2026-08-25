@@ -1,0 +1,2 @@
+// err_bitops_underflow.mad — bitwise ops need operands on the stack.
+~ drop

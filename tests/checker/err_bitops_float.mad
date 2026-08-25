@@ -1,0 +1,2 @@
+// err_bitops_float.mad — bitwise ops reject floats.
+3.14 ~ drop

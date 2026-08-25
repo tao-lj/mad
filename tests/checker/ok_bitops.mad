@@ -1,0 +1,10 @@
+// ok_bitops.mad — bitops and logical ops pass the type checker.
+5 ~ drop
+1 3 << drop
+8 1 >> drop
+12 10 & drop
+12 10 | drop
+12 10 ^ drop
+1 1 == ! drop
+1 1 == 1 1 == && drop
+1 1 == 0 1 == || drop

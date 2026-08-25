@@ -237,6 +237,17 @@ static void irb_word(IrBuilder *b, const Token *t) {
     }
 
     if (word_is(s, "="))   { irb_emit(b, IR_ASSIGN, t); return; }
+
+    if (word_is(s, "~"))   { irb_emit(b, IR_BITNOT, t); return; }
+    if (word_is(s, "!"))   { irb_emit(b, IR_LOGNOT, t); return; }
+    if (word_is(s, "<<"))  { irb_emit(b, IR_SHL, t); return; }
+    if (word_is(s, ">>"))  { irb_emit(b, IR_SHR, t); return; }
+    if (word_is(s, "&"))   { irb_emit(b, IR_BITAND, t); return; }
+    if (word_is(s, "|"))   { irb_emit(b, IR_BITOR, t); return; }
+    if (word_is(s, "^"))   { irb_emit(b, IR_BITXOR, t); return; }
+    if (word_is(s, "&&"))  { irb_emit(b, IR_LOGAND, t); return; }
+    if (word_is(s, "||"))  { irb_emit(b, IR_LOGOR, t); return; }
+
     if (word_is(s, "call")){ irb_emit(b, IR_CALL_IND, t); return; }
     if (is_jz)  { irb_emit(b, IR_JZ_DYN, t);  return; }
     if (is_jnz) { irb_emit(b, IR_JNZ_DYN, t); return; }
@@ -418,7 +429,7 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             ++i;
             goto done;
         case TOK_WORD:
-            if (t->text[0] == '&' || (t->text[0] == '*' && t->text[1])) {
+            if ((t->text[0] == '&' && t->text[1] && t->text[1] != '&') || (t->text[0] == '*' && t->text[1])) {
                 irb_flush(&b);
                 irb_ref_or_deref(&b, t);
             } else if (strncmp(t->text, "!@", 2) == 0) {
@@ -667,6 +678,75 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
             fprintf(stderr, "check: type mismatch in '%s': %s %s\n",
                     ir->text ? ir->text : "cmp",
                     type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_BOOL);
+        return true;
+
+    // — bitwise NOT: T → i64 (integer types only) —
+    case IR_BITNOT:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before '~'"); return false; }
+        if (!is_numeric(a) || a == T_F32 || a == T_F64) {
+            fprintf(stderr, "check: '~' on non-integer type %s\n", type_name(a));
+            return false;
+        }
+        stack_push(stack, T_I64);
+        return true;
+
+    // — logical NOT: T → bool (any scalar) —
+    case IR_LOGNOT:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before '!'"); return false; }
+        if (!is_numeric(a)) {
+            fprintf(stderr, "check: '!' on non-scalar type %s\n", type_name(a));
+            return false;
+        }
+        stack_push(stack, T_BOOL);
+        return true;
+
+    // — shifts: T T → i64 (integer types only) —
+    case IR_SHL:
+    case IR_SHR:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before shift"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before shift"); return false; }
+        if (!is_numeric(a) || a == T_F32 || a == T_F64) {
+            fprintf(stderr, "check: shift on non-integer type %s\n", type_name(a));
+            return false;
+        }
+        if (!is_numeric(b) || b == T_F32 || b == T_F64) {
+            fprintf(stderr, "check: shift amount must be integer, got %s\n", type_name(b));
+            return false;
+        }
+        stack_push(stack, T_I64);
+        return true;
+
+    // — bitwise binary: T T → i64 (integer types only) —
+    case IR_BITAND:
+    case IR_BITOR:
+    case IR_BITXOR:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before bitwise op"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before bitwise op"); return false; }
+        if (!is_numeric(a) || a == T_F32 || a == T_F64) {
+            fprintf(stderr, "check: bitwise op on non-integer type %s\n", type_name(a));
+            return false;
+        }
+        if (!is_numeric(b) || b == T_F32 || b == T_F64) {
+            fprintf(stderr, "check: bitwise op on non-integer type %s\n", type_name(b));
+            return false;
+        }
+        stack_push(stack, T_I64);
+        return true;
+
+    // — logical binary: T T → bool (any scalar) —
+    case IR_LOGAND:
+    case IR_LOGOR:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before logical op"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before logical op"); return false; }
+        if (!is_numeric(a)) {
+            fprintf(stderr, "check: logical op on non-scalar type %s\n", type_name(a));
+            return false;
+        }
+        if (!is_numeric(b)) {
+            fprintf(stderr, "check: logical op on non-scalar type %s\n", type_name(b));
             return false;
         }
         stack_push(stack, T_BOOL);
@@ -965,6 +1045,15 @@ void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
         case IR_ARITH: op->code = dt[OP_ARITH]; op->u.i = ir[i].u.i; break;
         case IR_CMP:   op->code = dt[OP_CMP];   op->u.i = ir[i].u.i; break;
         case IR_ASSIGN: op->code = dt[OP_ASSIGN]; break;
+        case IR_BITNOT: op->code = dt[OP_BITNOT]; break;
+        case IR_LOGNOT: op->code = dt[OP_LOGNOT]; break;
+        case IR_SHL:    op->code = dt[OP_SHL];    break;
+        case IR_SHR:    op->code = dt[OP_SHR];    break;
+        case IR_BITAND: op->code = dt[OP_BITAND]; break;
+        case IR_BITOR:  op->code = dt[OP_BITOR];  break;
+        case IR_BITXOR: op->code = dt[OP_BITXOR]; break;
+        case IR_LOGAND: op->code = dt[OP_LOGAND]; break;
+        case IR_LOGOR:  op->code = dt[OP_LOGOR];  break;
         case IR_ALLOC:  op->code = dt[OP_ALLOC];  break;
         case IR_HALLOC: op->code = dt[OP_HALLOC]; op->has_ty = true; break;
         case IR_FREE:   op->code = dt[OP_FREE];   break;

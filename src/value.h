@@ -26,7 +26,7 @@ bool is_type_name(const char *s, TypeKind *out);
 TypeKind split_annotated_name(const char *tok, char *base, size_t base_sz,
                               bool *has_type, TypeKind *ty);
 
-// Returns true for all integer and float types.
+// Returns true for all scalar types (integer, float, bool, char).
 bool is_numeric(TypeKind t);
 
 // Byte size of a scalar type (for mread/write bounds checks).

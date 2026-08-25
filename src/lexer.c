@@ -207,7 +207,7 @@ void lex_source(const char *src, TokenVec *out) {
             ++p;
             buf[1] = '\0';
             k = TOK_CHAR;
-        } else if (*p == '&' || (*p == '*' && is_ident_start((unsigned char)p[1]))) {
+        } else if ((*p == '&' || *p == '*') && is_ident_start((unsigned char)p[1])) {
             // '&name' and '*name' are reference tokens. A standalone '*' is
             // deliberately NOT a reference: it is the multiplication operator.
             char sig = *p++;

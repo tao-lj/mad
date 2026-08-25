@@ -75,7 +75,7 @@ TypeKind split_annotated_name(const char *tok, char *base, size_t base_sz,
 bool is_numeric(TypeKind t) {
     return t == T_I8  || t == T_U8  || t == T_I16 || t == T_U16 ||
            t == T_I32 || t == T_U32 || t == T_I64 || t == T_U64 ||
-           t == T_F32 || t == T_F64;
+           t == T_F32 || t == T_F64 || t == T_BOOL || t == T_CHAR;
 }
 
 size_t type_size(TypeKind t) {
