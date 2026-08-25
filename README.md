@@ -20,15 +20,17 @@ make clean      # remove build artifacts
 ```text
 src/          interpreter sources
   common.*    shared utilities: grow-only vectors, diagnostics, file IO
-  lexer.*     tokenizer ([] group expansion, :{...} global capture)
-  value.*     runtime values, typed pools, memory objects, pointers, data stack
+  lexer.*     tokenizer ([] group expansion, :{...} global capture, typed literals)
+  value.*     runtime values (inline scalars), memory objects, pointers, data stack
   vm.h        VM state and symbol-table structures
   symtab.c    function/label discovery over the token stream
+  ir.*        intermediate representation: build, check, optimize, lower
   tcode.*     threaded-code compiler (token classification, op emission, jump fusion)
   exec.c      runtime: frames, variable resolution, dispatch loop (labels-as-values), builtins
   main.c      CLI entry point
 examples/     one directory per program: main.mad + input + expected,
               all run by `make test`
+tests/        checker unit tests (tests/checker/)
 ```
 
 ## Core syntax
@@ -162,8 +164,15 @@ call
 Typed input is a normal stack operation:
 
 ```text
+read@i8
+read@u8
+read@i16
+read@u16
+read@i32
+read@u32
 read@i64
 read@u64
+read@f32
 read@f64
 read@char
 read@bool
@@ -182,22 +191,21 @@ printstr    // print NUL-terminated mem/memptr
 
 ## Runtime model
 
-A data-stack value is represented as:
+A data stack value is represented as:
 
 ```text
-(type, idx)
+(type, scalar_value)
 ```
 
-`idx` indexes a type-specific runtime pool. The stack therefore does not need a single fixed machine width.
+The scalar is stored inline in the `Value` union (i8/u8/i16/u16/i32/u32/i64/u64/f32/f64/bool/char) — no pool indirection for numeric types. Handle types (mem, memptr, ptr, label, func) store a uint64 id in the same union.
 
 The current MVP implements these runtime types:
 
 ```text
-i64 u64 f64 bool char
-mem memptr ptr label func
+i8  u8  i16  u16  i32  u32  i64  u64  f32  f64
+bool  char
+mem  memptr  ptr  label  func
 ```
-
-The language design additionally reserves the smaller integer widths and `f32`; they are planned for the next type-system expansion rather than silently pretending that `i64` has all widths.
 
 ## Lifetime
 
