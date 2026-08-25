@@ -1,9 +1,33 @@
 # MAD — MAD Ain't Disciplined
 
-MAD is a deliberately small postfix / data-stack language prototype.
-The MVP is a C17 interpreter and **does not build an AST**.
+MAD is a deliberately small postfix / data-stack language. The implementation is a
+C17 interpreter that **never builds an AST**.
 
-Full language reference: [`MANUAL.md`](MANUAL.md) (语法、内建字、内存模型、实现原理、风格指南).
+Full language reference: [`MANUAL.md`](MANUAL.md) — [`中文版`](MANUAL_zh.md)
+
+## Design philosophy
+
+MAD achieves strong functionality with minimal implementation cost by combining
+ideas from three traditions:
+
+- **Data flow: FORTH-style stack thinking.** No variables in the traditional sense —
+  values live on a data stack, words pop operands and push results,书写顺序即执行顺序.
+  Parentheses are visual grouping only (`(a b +) c *` ≡ `a b + c *`).
+
+- **Control flow: assembly-style labels and jumps.** `label condition jnz` follows
+  the assembler convention — condition before jump, `jz`/`jnz` for conditional,
+  `jmp` for unconditional. No while/for/if — the programmer thinks in branches.
+
+- **Data structures: C/assembly memory management + LISP-style manual interpretation.**
+  `alloc`/`halloc` give raw byte buffers with bounds checking; `mread@T`/`write@T`
+  access typed slots; `sizeof` queries size. The programmer builds and interprets
+  data structures explicitly — arrays, trees, graphs — the way you would in C,
+  but with runtime safety nets (bounds checks, dangling-pointer detection, type checks).
+
+The result is a language that is trivial to implement (no parser beyond a tokenizer,
+no AST, no tree-walking) yet supports recursion, first-class functions, pointers,
+memory management, module imports, and a typed IR with compile-time constant folding
+and typed opcode specialization.
 
 ## Build
 
@@ -33,197 +57,20 @@ examples/     one directory per program: main.mad + input + expected,
 tests/        checker unit tests (tests/checker/)
 ```
 
-## Core syntax
-
-### Functions
-
-```text
-:foo
-    ...
-;
-```
-
-A function definition is registered but its body is not executed while top-level code is running. `;` performs an implicit `ret`.
-
-Global dependencies must be attached directly to `:`:
-
-```text
-:{counter limit}check [x@i64]
-    ...
-;
-```
-
-There may be no whitespace between `:`, `{`, and the global list. `{}` is compile-time metadata, not a runtime operation.
-
-### Parameters
-
-```text
-:foo [a@i64 b@i64]
-    ...
-;
-```
-
-`[]` reverses its contents and is not nestable. It is intended to make stack-order parameter binding readable.
-
-### Parentheses
-
-`(` and `)` are whitespace-like grouping markers. They have no semantic effect.
-
-Thus these are equivalent:
-
-```text
-((a b +) c *)
-a b + c *
-(a b +) c *
-```
-
-The examples use them as visual grouping: each line wraps the operands of one
-action in `( )`, so postfix code reads as a few short statements per line
-instead of flat token soup. See `examples/` for the convention.
-
-### Variables
-
-```text
-3 a@i64       // declare a and consume 3
-&a            // reference a
- a            // load a
-3 &a =        // assign a = 3
-```
-
-An unknown valid variable name consumes the stack top and creates a local/global variable depending on the current environment. A type annotation fixes the variable type permanently.
-
-A local variable may not have the same name as a global variable. A function may only access globals explicitly listed in `:{...}`.
-
-### Pointers
-
-`&name` produces a `ptr`. `*name` dereferences a pointer variable and loads the referenced value.
-
-Pointers are runtime references rather than raw machine addresses. They can refer to locals or globals; dereferencing a local after its frame has returned is rejected as a dangling pointer.
-
-### Memory
-
-```text
-100 alloc       // local-lifetime mem
-100 halloc      // heap-lifetime mem
-free
-```
-
-Scalar memory access:
-
-```text
-m offset mread@i64
-value m offset write@i64
-```
-
-`memptr` points to a `mem` object. String literals are read-only, NUL-terminated `memptr` values.
-
-### Type conversion
-
-```text
-3 !@f64
-```
-
-The cast consumes the old value and pushes the converted value. Assignment remains strictly typed.
-
-### Control flow
-
-```text
-loop:
-    ...
-    condition loop jnz    // jump when condition is non-zero/true
-```
-
-Conditional jumps follow the assembly convention: `jz` pops a condition and jumps **when it is zero/false**, `jnz` jumps **when it is non-zero/true**. `jmp` is unconditional. A label is a first-class `label` value when referenced with `&label`.
-
-Example:
-
-```text
-:countdown [n@i64]
-    (n 0 ==) done jnz
-    n print println
-    (n 1 -) countdown
-    ret
-done:
-;
-```
-
-### Functions as values
-
-```text
-&foo
-```
-
-produces a `func`. It can later be called with:
-
-```text
-call
-```
-
-## Standard input
-
-Typed input is a normal stack operation:
-
-```text
-read@i8
-read@u8
-read@i16
-read@u16
-read@i32
-read@u32
-read@i64
-read@u64
-read@f32
-read@f64
-read@char
-read@bool
-```
-
-The value is pushed onto the data stack. `bool` accepts `true`, `false`, `1`, or `0`.
-
-## Output
-
-```text
-print       // print value, no newline
-println     // print newline
-printn      // compatibility alias for print
-printstr    // print NUL-terminated mem/memptr
-```
-
-## Runtime model
-
-A data stack value is represented as:
-
-```text
-(type, scalar_value)
-```
-
-The scalar is stored inline in the `Value` union (i8/u8/i16/u16/i32/u32/i64/u64/f32/f64/bool/char) — no pool indirection for numeric types. Handle types (mem, memptr, ptr, label, func) store a uint64 id in the same union.
-
-The current MVP implements these runtime types:
-
-```text
-i8  u8  i16  u16  i32  u32  i64  u64  f32  f64
-bool  char
-mem  memptr  ptr  label  func
-```
-
-## Lifetime
-
-`alloc` creates frame-lifetime memory and is released when the current function returns. `halloc` creates heap-lifetime memory and remains until `free` or program shutdown.
-
-## Imports
+## Quick example
 
 ```mad
-"lib.mad" import    // consumes a memptr path from the stack
+:fact [n@i64]
+    (n 2 <) base jnz
+    (n 1 -) fact
+    n *
+    ret
+base:
+    1
+;
+
+5 fact println       // prints 120
 ```
-
-`import` takes a NUL-terminated path in a `memptr` (a string literal is the usual source), reads and lexes that file, discovers its function definitions, then runs its top level — so its global variables and functions become visible to the importer. Rules:
-
-- relative paths resolve against the directory of the **importing file**, not the process CWD; absolute paths are taken verbatim;
-- only top-level code may `import` (like C's `#include`, it is a module-level operation);
-- imported files are appended to the shared token stream, so definitions are global for the rest of the run;
-- each file is imported at most once — `#pragma once` semantics, always on: repeated imports (direct, nested, or via different relative spellings) are silent no-ops, and importing the main file itself is ignored too;
-- nesting depth is capped at 64 to guard import cycles.
 
 ## Examples
 
@@ -235,24 +82,13 @@ Each `examples/<name>/` directory holds one self-contained program:
 - `branch/` — conditional jumps (`jz` / `jnz`) in both polarities
 - `import/` — nested module imports, including late-bound function references
 - `nqueens/` — N-Queens solver: recursion, `mem` arrays, label-based control flow
-- `p1038/` — 洛谷 P1038 [NOIP 2003 提高组] 神经网络: flat i64 arrays in `mem`, worklist graph traversal
+- `p1038/` — graph processing: flat i64 arrays in `mem`, worklist traversal
 
 ## Tests
 
 `make test` runs every `examples/*/main.mad` — feeding its `input` when one
-exists — and diffs stdout against its `expected`. Together the examples cover:
+exists — and diffs stdout against its `expected`.
 
-- recursion / GCD
-- assignment and type errors
-- pointers
-- indirect function calls
-- memory access
-- typed standard input
-- conditional jumps in both polarities
-- module imports with duplicate-import suppression and late binding
-- P1038-style graph processing
-- frame growth beyond the initial frame-vector capacity
+## License
 
-## Design philosophy
-
-MAD intentionally avoids an AST. The interpreter works with tokens, symbol tables, function slices, runtime pools, frames, and a data stack. Function bodies are lazily compiled into a direct-threaded instruction array on first execution (GCC labels-as-values): literals, names, call targets, and jump destinations are resolved once at compile time, `label jz/jnz/jmp` sequences are fused into direct branches, and dispatch is a single computed goto instead of per-token string comparisons. Variables remain dynamically resolved at run time so that existence can depend on the execution path.
+Public domain. Use however you like.

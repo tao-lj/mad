@@ -1,179 +1,137 @@
-# MAD 语言手册
+# MAD Language Manual
 
-MAD（**MAD Ain't Disciplined**）以后缀记法 + 数据栈为核心，无语句/表达式之分：
-字面量压栈，字（word）弹栈操作后压回结果。书写顺序即执行顺序。
-本手册覆盖全部语言功能与实现原理；可运行程序见 `examples/`。
+MAD (**MAD Ain't Disciplined**) is a postfix data-stack language.
+Literals push onto the stack; words pop operands and push results.
+Writing order is execution order.
 
-栈效应记号：`( 弹出顺序 -- 压入顺序 )`，如 `+` 是 `( a b -- sum )`（b 先弹）。
+Stack effect notation: `( pop order -- push order )`.
+For example `+` is `( a b -- sum )` (b is popped first).
 
-## 目录
+Full type / literal / operator tables: [`REFERENCE.md`](REFERENCE.md)
 
-1. [词法结构](#1-词法结构)
-2. [类型系统](#2-类型系统)
-3. [变量与作用域](#3-变量与作用域)
-4. [内建字参考](#4-内建字参考)
-5. [控制流与函数](#5-控制流与函数)
-6. [指针与内存](#6-指针与内存)
-7. [类型转换](#7-类型转换)
-8. [模块导入](#8-模块导入)
-9. [输入输出与错误](#9-输入输出与错误)
-10. [实现原理](#10-实现原理)
+## 1. Lexical structure
 
----
+- Comments: `//` to end of line; whitespace separates tokens only.
+- `( )` are discarded by the lexer — pure visual grouping:
+  `(a b +) c *` ≡ `a b + c *`.
+- `[ ]` collect their tokens, **reverse** them, and push back (not nestable).
+  Used for parameter lists and batch declarations.
+- Variable names start with a letter or `_`, followed by letters, digits, `_`, `@`.
+- Prefix notation as separate tokens:
 
-## 1. 词法结构
+  | Form | Meaning |
+  |------|---------|
+  | `&name` | reference: variable→ptr, label→label, function→func |
+  | `*name` | dereference pointer variable |
+  | `!@T` | type cast |
+  | `name:` | label definition |
+  | `u:N` | unsigned literal |
+  | `T:N` | sized literal (e.g. `i8:10`, `f32:3.14`, `char:65`) |
 
-- 注释：`//` 到行尾；空白仅分隔 token。
-- `( )` 被词法器丢弃，纯视觉分组：`(a b +) c *` 与 `a b + c *` 等价。
-- `[ ]` 收集其中 token **整体反转**放回流（不可嵌套），用于参数表和批量声明，
-  使"书写顺序 = 栈顺序"。
-- 变量名以字母或 `_` 开头，后续可为字母、数字、`_`、`@`。前缀记法作为独立 token：
+- Literals: `123` / `-3` → i64; `3.14` → f64; `u:42` → u64; `"text"` → memptr
+  (escapes: `\n \r \t \0 \\ \"`). `'c'` → char literal (escapes: `\n \0 \\ \'`),
+  stored as i8. No boolean literal. Max token length: 255 bytes.
+  Note: `-3` is a single token; for negation write `(0 x -)`.
+- Definitions: `:name ... ;` registers a function (body runs on call, not at definition);
+  `:{globals}name ... ;` captures listed globals; `;` at top level stops execution.
+- Type annotation: any variable name can carry `@type` suffix (e.g. `x@i64`).
 
-  | 形式 | 含义 |
-  |------|------|
-  | `&name` | 引用：变量→ptr，标签→label，函数→func |
-  | `*name` | 解引用指针变量 |
-  | `!@T` | 类型转换 |
-  | `name:` | 标签定义 |
-  | `u:N` | 无符号字面量 |
-  | `type:N` | 定宽字面量（如 `i8:10`、`u16:65535`、`f32:3.14`、`char:65`） |
+## 2. Types
 
-- 字面量：`123` / `-3` 为 i64；`3.14` 为 f64；`u:42` 为 u64；`"text"` 为 memptr
-  （转义 `\n \r \t \0 \\ \"`）。`'c'` 为字符字面量（支持 `\n`、`\0`、`\\`、`\'` 等转义），
-  结果类型为 i8。无布尔字面量。单个 token 最长 255 字节。
-  注意 `-3` 整体是一个字面量，取负请写 `(0 x -)`。
-- 定义：`:name ... ;` 函数；`:{a b}name ... ;` 带全局捕获（`{}` 是编译期元数据）；
-  顶层遇到 `;` 停止执行。
-- 类型注解：任何变量名可带 `@type` 后缀固定类型（如 `x@i64`），一经声明永久固定。
+Common scalar types (see [`REFERENCE.md`](REFERENCE.md) for full list):
 
-## 2. 类型系统
+| Type | Width | Example |
+|------|-------|---------|
+| `i64` | 8 | `123` (default for integers) |
+| `u64` | 8 | `u:42` |
+| `f64` | 8 | `3.14` (default for floats) |
+| `bool` | 1 | result of comparisons, `!`, `&&`, `\|\|` |
+| `char` | 1 | `'c'` |
 
-### 标量类型
+Handle types: `mem`, `memptr`, `ptr`, `label`, `func`.
 
-| 类型 | 宽度 | 含义 | 产生方式 |
-|------|------|------|----------|
-| `i8` | 1 | 8 位有符号整数 | `i8:N`、`'c'`、`read@i8`、`mread@i8` |
-| `u8` | 1 | 8 位无符号整数 | `u8:N`、`read@u8`、`mread@u8` |
-| `i16` | 2 | 16 位有符号整数 | `i16:N`、`read@i16`、`mread@i16` |
-| `u16` | 2 | 16 位无符号整数 | `u16:N`、`read@u16`、`mread@u16` |
-| `i32` | 4 | 32 位有符号整数 | `i32:N`、`read@i32`、`mread@i32` |
-| `u32` | 4 | 32 位无符号整数 | `u32:N`、`read@u32`、`mread@u32` |
-| `i64` | 8 | 64 位有符号整数 | 整数字面量（默认）、`read@i64`、`mread@i64` |
-| `u64` | 8 | 64 位无符号整数 | `u:N`、`read@u64`、`mread@u64` |
-| `f32` | 4 | 32 位浮点 | `f32:N`、`read@f32`、`mread@f32` |
-| `f64` | 8 | 64 位浮点 | 浮点字面量（默认）、`read@f64`、`mread@f64` |
-| `bool` | 1 | 布尔 | 比较、`read@bool`、`mread@bool` |
-| `char` | 1 | 单字节字符（别名用于 I/O 格式） | `read@char`、`mread@char` |
+All scalar values are stored inline in the `Value` union — no pool indirection.
+Handles store a uint64 id in the same union.
 
-### 句柄类型
+### Arithmetic and comparison rules
 
-| 类型 | 含义 | 产生方式 |
-|------|------|----------|
-| `mem` | 字节缓冲句柄 | `alloc` / `halloc` |
-| `memptr` | 指向 mem 的句柄 | 字符串字面量、`&mem变量` |
-| `ptr` | 变量指针 | `&name` |
-| `label` | 标签值 | `&label` |
-| `func` | 函数值 | `&foo` |
+- Same-type: `i64 + i64 → i64`, `f64 * f64 → f64`.
+- Mixed numeric: smaller integer promotes to i64; any f64 promotes both to f64.
+- `%` is integer-only (no f32/f64).
+- Bitwise ops (`~ << >> & | ^`) accept integer types only (i8..u64, bool, char), result i64.
+- Logical ops (`! && ||`) accept any scalar, result bool.
+- Comparisons require numeric types, result bool.
+- **No implicit assignment conversion** — exact type match required.
 
-### 值表示
+## 3. Variables and scope
 
-栈上的值内联存储在 `Value` 联合体中：
+**Declaration consumes the stack top:**
 
-```text
-(type, scalar)
+```mad
+3 x@i64          // declare x as i64 with value 3
+x                // load x
+3 &x =           // assign x = 3
 ```
 
-标量类型（i8…u64、f32、f64、bool、char）的值直接存在联合体对应字段中，无池间接引用。
-句柄类型（mem、memptr、ptr、label、func）存储 uint64 id。
+An unknown valid variable name pops the stack top as initial value and declares it.
+An existing name loads the value. Double declaration is an error.
 
-### 算术与比较规则
+- Top-level declarations are global; inside a function they are local (frame-lifetime).
+- Locals and parameters must not shadow globals; parameters must have unique names.
+- Functions may only access globals listed in their `:{...}` clause.
 
-- **同类型优先**：两个 i64 运算得 i64；两个 f64 运算得 f64；两个 i8 运算得 i64（运行时
-  结果始终提升为 i64）。f32 同理提升为 f32。
-- **混合数值**：两个不同标量类型（如 i64 + i8）算术时，较小类型隐式提升为 i64 后运算，
-  结果为 i64。任一操作数为 f64 则双方转 f64 运算；任一为 f32 则双方转 f32。
-- `%` 不支持浮点（f32/f64 均报错）。
-- **位运算**（`~` `<<` `>>` `&` `|` `^`）仅接受整数类型（i8…u64、bool、char），
-  不接受浮点；结果始终为 i64。
-- **逻辑运算**（`!` `&&` `||`）接受任意标量，结果为 bool。
-- **比较**要求两个操作数都是数值类型（i8…f64 均可），结果为 bool。两个 f64 比较
-  用浮点语义；其他情况双方先转 i64 再比较。
-- **无隐式赋值转换**：传参、赋值、`write@T` 要求精确类型匹配。
-- **条件位置**（`jz`/`jnz`/`assert`）接受 bool、任何整数类型（i8…u64），
-  非零为真；不接受浮点或句柄类型。
-
-## 3. 变量与作用域
-
-**声明即消费**：对未声明的合法变量名求值时弹出栈顶作初值并完成声明
-（`3 x@i64`；不带注解则类型取初值）。已存在的名字求值即加载。
-同名二次声明报错——循环里只赋值不声明。
-
-```text
-1 2 3 [a b c]        // [] 反转批量声明：a=1 b=2 c=3
+```mad
+1 2 3 [a b c]    // batch declaration: a=1 b=2 c=3
 ```
 
-- 顶层声明的变量是全局变量；函数体（含参数）里的是局部变量，随帧销毁。
-- 局部变量、参数不得与任何全局变量同名；参数不得重名。
-- 函数只能访问其 `:{...}` 列表中列出的全局变量；顶层可见全部全局。
+## 4. Built-in words
 
-## 4. 内建字参考
+User-defined functions/labels shadow built-in words of the same name.
 
-用户定义的函数/标签**遮蔽同名内建**（解析时先查用户符号表）。
+| Word | Stack effect | Description |
+|------|-------------|-------------|
+| `dup` / `drop` / `swap` | stack ops | duplicate / discard / exchange top |
+| `+ - * / %` | `( a b -- r )` | arithmetic; divide-by-zero is an error |
+| `== != < > <= >=` | `( a b -- flag )` | comparison, result bool |
+| `~` | `( a -- r )` | bitwise NOT (integer only, → i64) |
+| `!` | `( a -- flag )` | logical NOT (any scalar, → bool) |
+| `<<` / `>>` | `( a b -- r )` | shift (integer only, → i64) |
+| `&` `\|` `^` | `( a b -- r )` | bitwise AND/OR/XOR (integer only, → i64) |
+| `&&` `\|\|` | `( a b -- flag )` | logical AND/OR (any scalar, → bool) |
+| `=` | `( ptr value -- )` | assign through pointer |
+| `alloc` / `halloc` | `( bytes -- mem )` | frame / heap lifetime memory |
+| `free` | `( mem/memptr -- )` | release memory |
+| `sizeof` | `( v -- i64 )` | scalar: type byte size; mem/memptr: mem length |
+| `mread@T` | `( mem off -- v )` | read scalar from mem |
+| `write@T` | `( val mem off -- )` | write scalar to mem |
+| `print` / `printn` | `( v -- )` | print value without newline |
+| `println` | `( -- )` | print newline only |
+| `printstr` | `( mem/memptr -- )` | print NUL-terminated string |
+| `read@T` | `( -- v )` | read typed value from stdin |
+| `call` | `( func -- )` | indirect function call |
+| `ret` / `halt` | `( -- )` | return / terminate program |
+| `assert` | `( flag -- )` | abort if false |
+| `import` | `( path -- )` | import module file |
 
-| 字 | 栈效应 | 说明 |
-|----|--------|------|
-| `dup` / `drop` / `swap` | 栈操作 | 复制 / 丢弃 / 交换栈顶 |
-| `+ - * / %` | `( a b -- r )` | 除零报错；任一为浮点则浮点运算（`%` 除外） |
-| `== != < > <= >=` | `( a b -- flag )` | 数值类型均可比较，结果 bool |
-| `~` | `( a -- r )` | 按位取反（整数类型，结果 i64） |
-| `!` | `( a -- flag )` | 逻辑取反（任意标量，零→true，非零→false） |
-| `<<` / `>>` | `( a b -- r )` | 左移 / 右移（整数类型，结果 i64） |
-| `&` | `( a b -- r )` | 按位与（整数类型，结果 i64） |
-| `\|` | `( a b -- r )` | 按位或（整数类型，结果 i64） |
-| `^` | `( a b -- r )` | 按位异或（整数类型，结果 i64） |
-| `&&` | `( a b -- flag )` | 逻辑与（任意标量，结果 bool） |
-| `\|\|` | `( a b -- flag )` | 逻辑或（任意标量，结果 bool） |
-| `=` | `( ptr value -- )` | 经指针赋值：先弹 ptr 再弹值 |
-| `alloc` / `halloc` | `( bytes -- mem )` | 帧 / 堆生命周期内存 |
-| `free` | `( mem/memptr -- )` | 释放；重复使用已释放内存报错 |
-| `sizeof` | `( v -- i64 )` | 标量返回类型字节数；mem/memptr 返回 mem 长度 |
-| `mread@T` | `( mem off -- v )` | 读标量；越界报错 |
-| `write@T` | `( val mem off -- )` | 写标量；越界、只读、类型不符报错 |
-| `print` / `printn` | `( v -- )` | 打印值不换行（`printn` 是别名） |
-| `println` | `( -- )` | 只打印换行，不取值 |
-| `printstr` | `( mem/memptr -- )` | 打印 NUL 结尾字节串 |
-| `read@T` | `( -- v )` | stdin 读一个 T 值 |
-| `call` | `( func -- )` | 间接调用 func 值（实参先压栈） |
-| `ret` / `halt` | `( -- )` | 返回 / 终止程序 |
-| `assert` | `( flag -- )` | 为假报 "assertion failed" |
-| `import` | `( path -- )` | 导入模块文件，见第 8 节 |
+`T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}.
 
-`T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}。
-各类型 `mread`/`write` 字节数等于 `type_size(T)`（i8/bool/char 为 1，i16/u16 为 2，
-i32/u32/f32 为 4，i64/u64/f64 为 8）。
-数组惯例：按元素类型大小偏移——`(a (i ELEM_SIZE *) mread@T)` 即读 `a[i]`，
-其中 `ELEM_SIZE` 为该类型的字节数。
+## 5. Control flow and functions
 
-## 5. 控制流与函数
+**Labels and jumps:**
 
-**标签与跳转**：`name:` 定义纯位置标记；跳转范围限于当前函数（含顶层）。
-
-```text
+```mad
 loop:
     ...
-    (i 0 >) loop jnz      // 条件在前、目标在后；jz=零跳，jnz=非零跳
+    (i 0 >) loop jnz    // condition before target; jz=jump-if-zero, jnz=jump-if-nonzero
 ```
 
-`jmp`/`jump` 无条件跳转。`&label` 把标签变成一等 label 值存入变量，
-动态形式的目标来自栈（先弹目标再弹条件）。裸标签名紧挨跳转字会被编译期
-**融合**成静态分支；存储标签的动态跳转中间不要再写裸标签名。
+`jmp`/`jump` is unconditional. `&label` produces a first-class label value.
+Bare label names adjacent to jump words are **fused** at compile time into
+direct branches; stored labels use dynamic jumps (target popped from stack).
 
-**函数**：`:name [params] body ;` 定义在扫描期登记，调用时才执行。
-参数经 `[]` 反转按书写顺序绑定，按值传递且类型精确匹配；
-调用方按书写顺序压实参再调。函数体末尾隐式 `ret`。
-递归即普通自调用（先压参再调）。
+**Functions:**
 
-```text
+```mad
 :fact [n@i64]
     (n 2 <) base jnz
     (n 1 -) fact
@@ -184,116 +142,93 @@ base:
 ;
 ```
 
-`&foo` 产生 func 值，可保存传递，用 `call` 间接调用。
-终止方式：`halt`；顶层 token 流耗尽；顶层遇 `;`；顶层 `ret`。
+Parameters are bound via `[]` reversal in writing order, passed by value with
+exact type matching. `;` at the end of a function body is an implicit `ret`.
 
-## 6. 指针与内存
+`&foo` produces a `func` value for indirect calls via `call`.
 
-`&变量` 产生 `ptr`（变量持有 mem 时产生指向它的 `memptr`）；`&x` 只引用不声明。
-`= ` 经指针写入；`*p` 解引用指针变量加载其值。
+## 6. Pointers and memory
 
-```text
-3 x@i64   &x p@ptr   5 &x =   *p print println     // 输出 5
+`&variable` produces a `ptr` (or `memptr` if the variable holds a mem).
+`=` assigns through a pointer. `*p` dereferences a pointer variable.
+
+```mad
+3 x@i64   &x p@ptr   5 &x =   *p print println    // prints 5
 ```
 
-指针记录目标所在帧（或全局表）与槽位，解引用校验目标帧存活，
-悬垂指针被拒绝而非读到垃圾。
+Pointers track their target frame; dereferencing after the frame returns
+is rejected as a dangling pointer.
 
-`mem` 是字节缓冲，所有访问带边界检查。生命周期：
+**Memory:**
 
-| 创建 | 释放时机 |
-|------|----------|
-| `alloc`（帧生命周期） | 函数 `ret` 时自动 |
-| `halloc`（堆生命周期） | `free` 或程序结束 |
-| 字符串字面量（只读共享） | 程序结束 |
+| Creation | Lifetime |
+|----------|----------|
+| `alloc` | frame-lifetime; freed on function return |
+| `halloc` | heap-lifetime; freed by `free` or program exit |
+| string literal | read-only, program-lifetime |
 
-字符串字面量在编译期一次性解码为只读 NUL 结尾 mem，运行期每次求值得指向它的
-memptr，循环中反复出现不重复分配；内容不可写。
+Scalar access: `m offset mread@T` / `value m offset write@T`.
+Array convention: offset by element size — `(a (i ELEM_SIZE *) mread@T)` reads `a[i]`.
 
-## 7. 类型转换
+## 7. Type conversion
 
-`!@T` 弹出旧值压入新值。允许的转换：
+`!@T` pops old value, pushes converted value. Allowed conversions:
 
-| 源 → 目标 | 说明 |
-|-----------|------|
-| 整数 ↔ 整数（i8…u64 任意方向） | 截断到目标宽度（如 `u64 !@i8` 截断低 8 位） |
-| 整数 ↔ f32/f64 | 截断为浮点或截断为整数 |
-| bool → 整数/f32/f64 | false→0, true→1 |
-| 整数/char/f32/f64 → bool | 非零为 true |
-| i8…u64 ↔ char | 截断为单字节 |
-| label/func → u64 | 取内部编号 |
-| 同类型 | 恒等（无操作） |
+| Source → Target | Notes |
+|----------------|-------|
+| integer ↔ integer | truncate to target width |
+| integer ↔ f32/f64 | truncate or convert |
+| bool → integer/f32/f64 | false→0, true→1 |
+| integer/char/f32/f64 → bool | non-zero → true |
+| integer ↔ char | truncate to single byte |
+| label/func → u64 | extract internal id |
+| same type | no-op |
 
-整数→label 刻意禁止（防伪造跳转目标）。
+Integer → label is intentionally forbidden (prevents forged jump targets).
 
-## 8. 模块导入
+## 8. Module imports
 
-```text
-"lib.mad" import
+```mad
+"lib.mad" import    // consumes a memptr path from the stack
 ```
 
-从栈顶弹出 memptr 路径，读取并执行另一个 MAD 文件：其函数定义被注册，
-顶层在自己的帧中运行，因此其全局变量和函数对导入方可见。
+Pops a memptr path, reads and executes another MAD file: its function definitions
+are registered, and its top-level code runs, making globals and functions visible
+to the importer.
 
-- 相对路径基于**导入方文件所在目录**解析（不是进程 CWD）；绝对路径原样使用。
-- 只允许在**顶层代码**中 import（函数帧存活期间符号表会增长）。
-- **每个文件至多导入一次**（C++ `#pragma once` 语义，默认启用，无需任何命令）：
-  规范化路径已导入过的直接静默跳过，直接重复、嵌套重复、不同相对拼法
-  （`./a/../lib.mad`）都算同一文件；导入主程序自身同样被忽略。
-- 嵌套深度上限 64 层。
+- Relative paths resolve against the **importing file's directory**, not the process CWD.
+- Only top-level code may `import`.
+- Each file is imported at most once (`#pragma once` semantics, always on).
+- Nesting depth is capped at 64.
 
-典型布局：`main.mad` 中 `"lib/square.mad" import` 后即可调用其中的函数。
+## 9. I/O and errors
 
-## 9. 输入输出与错误
+stdin is parsed by `read@T`: integers decimal, floats by format, char reads one
+byte skipping whitespace, bool accepts `true`/`false`/`1`/`0`. Failure is an error.
+stdout adds no automatic separators — use `" " printstr` if needed.
+`print` renders handles as `<type:id>`.
 
-stdin 按 `read@T` 解析：整数按十进制读取（宽度由类型决定）、f32/f64 按浮点读取、
-char 跳过空白读一字节、bool 接受 `true/false/1/0`；失败立即报错。stdout 不自动加分隔符，
-需要分隔请自行 `" " printstr`。`print` 对句柄类型输出 `<type:id>` 形式。
+All errors print `line: message` and exit immediately. No exceptions, no recovery.
 
-所有错误（类型不符、栈下溢、越界、除零、悬垂指针、断言失败……）
-打印 `行号: 信息` 后立即非零退出，无异常无恢复。
+## 10. Implementation
 
-## 10. 实现原理
+**Two-pass, no AST:** Scan once to register function slices (name, params,
+captures, token range) and label positions. Compile remaining top-level as an
+anonymous `<top>` function. `import` appends tokens at runtime and re-scans.
 
-**两遍处理，无 AST**：启动后先线性扫描 token 流登记函数切片（名字、参数、
-捕获、token 区间）与各函数标签位置；再把剩余顶层当作匿名 `<top>` "函数"
-编译执行。`import` 是运行期例外：把被导入文件的 token 追加到同一 token 流尾部，
-对新区间重跑扫描期，再当匿名 `<import>` "函数"执行；主程序在启动时也注册进
-已导入清单以实现 pragma-once。
+**Threaded code:** Each function body is lazily compiled to an `Op` array on
+first execution. Instructions use GCC labels-as-values (`&&label`); dispatch
+is a single computed goto (`goto *(++ip)->code`). Literals, names, call targets,
+and jump destinations are resolved once at compile time. `label jz/jnz/jmp`
+sequences are fused into direct branches.
 
-**Threaded Code**：每个函数体首次执行时惰性编译成 `Op` 数组缓存复用；
-指令核心字段是 GCC labels-as-values 的 `&&label` 地址，派发即一条 computed
-goto（`goto *(++ip)->code`）。字面量、名字、调用目标、跳转目标都在编译期解析；
-`label jz/jnz/jmp` 相邻序列融合成静态分支；无法静态确定目标的用 `*_DYN`
-变体运行期取栈。字符串字面量也在编译期物化。
+**Compile-time type stack:** The builder tracks operand types during IR construction.
+When both operands of an arithmetic/comparison/bitwise op have known compatible
+types, it emits **typed IR** (e.g. `IR_ADD_I64`, `IR_EQ_F64`), which lowers to
+**typed opcodes** (`OP_ADD_I64`, `OP_EQ_F64`) — zero-overhead fast path with no
+runtime type dispatch. Unknown types fall through to **generic opcodes** (`OP_ADD`,
+`OP_EQ`) which do runtime dispatch. This gives hot-path performance for common
+types (i64, f64) while keeping the opcode space compact.
 
-**名字解析优先级**（编译一个字时）：
-
-```text
-字面量 → 标签定义(name:) → &/* /!@ → 标签名 → 函数名 → 跳转融合
-→ ret/halt/dup/drop/swap → 算术 → 比较 → '=' → call/jz/jnz/jmp
-→ mread@/write@/read@ → alloc/halloc/free → print 系列/assert/import
-→ 兜底：变量加载或隐式声明
-```
-
-**变量的存在性是运行期属性**：裸变量名编译成"加载或声明"指令，运行期查不到
-作用域时，若存在同名函数（可能来自稍后执行的 import，见晚绑定）则按函数调用，
-否则弹出栈顶当初值。因此变量是否存在取决于执行路径——这是刻意保留的动态语义。
-
-**IR 与类型检查**：编译后生成 IR（IrNode 数组），经过常量折叠优化后，
-由 `ir_check()` 执行基于工作流的类型检查——`ir_apply()` 逐指令模拟栈类型变化，
-`ir_check()` 沿控制流遍历并在标签处合并栈状态，确保类型安全与栈平衡。
-常量折叠对所有数值类型和浮点类型生效，结果保留在 IR 中供运行期直接使用。
-
-**三层操作体系**（representation → operation family → opcode）：
-操作按类型族分类——整数族（i8..u64, bool, char）、浮点族（f32, f64）。
-builder 维护编译期类型栈，当两个操作数类型已知且相同时，发射**类型化 IR**
-（如 `IR_ADD_I64`、`IR_EQ_F64`），lowerer 映射为类型化 opcode
-（如 `OP_ADD_I64`），runtime 走无类型分派的快速路径。
-类型未知时走**泛型 opcode**（`OP_ADD`、`OP_EQ`），runtime 做类型分派。
-这使得 hot path（i64/f64 算术、比较）零分派开销，同时保持 opcode 空间紧凑
-——只对 common case 做 typed specialization，rare case 走 generic handler。
-
-核心数据结构：token 流（唯一中间表示）、IrNode（IR 指令）、
-Op（threaded code 指令）、FuncSym（函数符号 + 编译缓存）、
-Value（内联标量联合体）、Frame（局部变量 + 本帧 alloc 清单）、MemObj、数据栈。
+**IR pipeline:** `ir_build` → `ir_optimize` (constant folding) → `ir_check`
+(worklist type checking via `ir_apply`) → `ir_lower` (IR → threaded Op array).
