@@ -341,6 +341,54 @@ IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map) {
             b.prev_tok = t;
             ++i;
             break;
+        case TOK_CHAR: {
+            irb_flush(&b);
+            size_t idx = irb_emit(&b, IR_CONST_I8, t);
+            b.v[idx].u.i = (int64_t)(uint8_t)t->text[0];
+            b.prev_tok = t;
+            ++i;
+            break;
+        }
+        case TOK_TYPED: {
+            irb_flush(&b);
+            const char *colon = strchr(t->text, ':');
+            size_t plen = (size_t)(colon - t->text);
+            char tname[8];
+            memcpy(tname, t->text, plen);
+            tname[plen] = '\0';
+            TypeKind ty;
+            is_type_name(tname, &ty);
+            const char *val = colon + 1;
+            IrKind ik;
+            switch (ty) {
+            case T_I8:  ik = IR_CONST_I8;  break;
+            case T_U8:  ik = IR_CONST_U8;  break;
+            case T_I16: ik = IR_CONST_I16; break;
+            case T_U16: ik = IR_CONST_U16; break;
+            case T_I32: ik = IR_CONST_I32; break;
+            case T_U32: ik = IR_CONST_U32; break;
+            case T_I64: ik = IR_CONST_I64; break;
+            case T_U64: ik = IR_CONST_U64; break;
+            case T_F32: ik = IR_CONST_F32; break;
+            case T_F64: ik = IR_CONST_F64; break;
+            case T_CHAR: ik = IR_CONST_I8; break;
+            default:    ik = IR_CONST_I64; break;
+            }
+            size_t idx = irb_emit(&b, ik, t);
+            switch (ty) {
+            case T_I8: case T_I16: case T_I32: case T_I64:
+            case T_CHAR:
+                b.v[idx].u.i = strtoll(val, NULL, 10); break;
+            case T_U8: case T_U16: case T_U32: case T_U64:
+                b.v[idx].u.u = strtoull(val, NULL, 10); break;
+            case T_F32: case T_F64:
+                b.v[idx].u.d = strtod(val, NULL); break;
+            default: break;
+            }
+            b.prev_tok = t;
+            ++i;
+            break;
+        }
         case TOK_COLON: {
             irb_flush(&b);
             // Emit IR_LABEL_DEF for the preceding word token (e.g. "t1" before ":")
@@ -538,9 +586,6 @@ bool stack_equal(const StackState *a, const StackState *b) {
 //  Type helpers
 // ---------------------------------------------------------------------------
 
-static bool is_numeric(TypeKind t) {
-    return t == T_I64 || t == T_U64 || t == T_F64;
-}
 
 static bool is_condition(TypeKind t) {
     return t == T_BOOL || t == T_I64 || t == T_U64;
@@ -566,11 +611,18 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
         return true;
 
     // — push one value —
-    case IR_CONST_I64:  stack_push(stack, T_I64);   return true;
-    case IR_CONST_U64:  stack_push(stack, T_U64);   return true;
-    case IR_CONST_F64:  stack_push(stack, T_F64);   return true;
-    case IR_CONST_STR:  stack_push(stack, T_MEM);    return true;
-    case IR_CONST_BOOL: stack_push(stack, T_BOOL);   return true;
+    case IR_CONST_I8:   stack_push(stack, T_I8);   return true;
+    case IR_CONST_U8:   stack_push(stack, T_U8);   return true;
+    case IR_CONST_I16:  stack_push(stack, T_I16);  return true;
+    case IR_CONST_U16:  stack_push(stack, T_U16);  return true;
+    case IR_CONST_I32:  stack_push(stack, T_I32);  return true;
+    case IR_CONST_U32:  stack_push(stack, T_U32);  return true;
+    case IR_CONST_I64:  stack_push(stack, T_I64);  return true;
+    case IR_CONST_U64:  stack_push(stack, T_U64);  return true;
+    case IR_CONST_F32:  stack_push(stack, T_F32);  return true;
+    case IR_CONST_F64:  stack_push(stack, T_F64);  return true;
+    case IR_CONST_STR:  stack_push(stack, T_MEM);   return true;
+    case IR_CONST_BOOL: stack_push(stack, T_BOOL);  return true;
     case IR_PUSH_LABEL: stack_push(stack, T_LABEL);  return true;
     case IR_REF:        stack_push(stack, T_PTR);    return true;
     case IR_DEREF:      stack_push(stack, T_I64);   return true;
@@ -875,8 +927,15 @@ void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
         op->aux2 = -1;
 
         switch (ir[i].kind) {
+        case IR_CONST_I8:  op->code = dt[OP_PUSH_I8];  op->u.i = ir[i].u.i; break;
+        case IR_CONST_U8:  op->code = dt[OP_PUSH_U8];  op->u.u = ir[i].u.u; break;
+        case IR_CONST_I16: op->code = dt[OP_PUSH_I16]; op->u.i = ir[i].u.i; break;
+        case IR_CONST_U16: op->code = dt[OP_PUSH_U16]; op->u.u = ir[i].u.u; break;
+        case IR_CONST_I32: op->code = dt[OP_PUSH_I32]; op->u.i = ir[i].u.i; break;
+        case IR_CONST_U32: op->code = dt[OP_PUSH_U32]; op->u.u = ir[i].u.u; break;
         case IR_CONST_I64: op->code = dt[OP_PUSH_I64]; op->u.i = ir[i].u.i; break;
         case IR_CONST_U64: op->code = dt[OP_PUSH_U64]; op->u.u = ir[i].u.u; break;
+        case IR_CONST_F32: op->code = dt[OP_PUSH_F32]; op->u.d = ir[i].u.d; break;
         case IR_CONST_F64: op->code = dt[OP_PUSH_F64]; op->u.d = ir[i].u.d; break;
         case IR_CONST_STR: op->code = dt[OP_PUSH_STR]; op->u.u = ir[i].u.u; break;
         case IR_CONST_BOOL: op->code = dt[OP_PUSH_BOOL]; op->u.i = ir[i].u.i; break;

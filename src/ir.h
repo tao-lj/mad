@@ -9,7 +9,12 @@
 #include "tcode.h"
 
 typedef enum {
-    IR_CONST_I64, IR_CONST_U64, IR_CONST_F64, IR_CONST_STR, IR_CONST_BOOL,
+    IR_CONST_I8, IR_CONST_U8,
+    IR_CONST_I16, IR_CONST_U16,
+    IR_CONST_I32, IR_CONST_U32,
+    IR_CONST_I64, IR_CONST_U64,
+    IR_CONST_F32, IR_CONST_F64,
+    IR_CONST_STR, IR_CONST_BOOL,
     IR_PUSH_LABEL,  // push a first-class label value
     IR_LOAD, IR_DECLARE, IR_REF, IR_DEREF,
     IR_CAST,

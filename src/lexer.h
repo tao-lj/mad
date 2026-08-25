@@ -7,10 +7,12 @@
 
 typedef enum {
     TOK_WORD,
-    TOK_INT,
-    TOK_UINT,
-    TOK_FLOAT,
-    TOK_STRING,
+    TOK_INT,       // plain decimal integer → i64
+    TOK_UINT,      // u:N → u64
+    TOK_FLOAT,     // decimal float → f64
+    TOK_STRING,    // "..." string literal
+    TOK_CHAR,      // 'c' character literal
+    TOK_TYPED,     // i8:N, u16:42, f32:1.5, char:65 etc.
     TOK_COLON,
     TOK_SEMI,
     TOK_GLOBAL_REF, // :{a b} captured globals, encoded on function headers

@@ -25,7 +25,23 @@ bool is_var_token(const char *s) {
     return true;
 }
 
-// Classifies bare words as INT/UINT/FLOAT literals.
+// Recognized type prefixes for typed prefix literals (i8:N, f32:N, etc.).
+static bool has_type_prefix(const char *buf) {
+    // Must start with i/u/f followed by digit or 'har', and contain ':'.
+    const char *colon = strchr(buf, ':');
+    if (!colon || colon == buf) return false;
+    size_t plen = (size_t)(colon - buf);
+    // type name lengths: 2 (i8,u8) or 3 (i16,u16,i32,u32,i64,u64,f32,f64) or 4 (char)
+    if (plen == 2 || plen == 3 || plen == 4) {
+        // Quick check: first char must be i, u, f, or c.
+        char c0 = buf[0];
+        if (c0 == 'i' || c0 == 'u' || c0 == 'f' || c0 == 'c')
+            return true;
+    }
+    return false;
+}
+
+// Classifies bare words as INT/UINT/FLOAT/TYPED literals.
 static TokKind classify_word(const char *buf, TokKind k) {
     if (k != TOK_WORD) return k;
     bool has_dot = false;
@@ -45,6 +61,7 @@ static TokKind classify_word(const char *buf, TokKind k) {
     }
     if (all_num && digits > 0) return has_dot ? TOK_FLOAT : TOK_INT;
     if (strncmp(buf, "u:", 2) == 0 && buf[2]) return TOK_UINT;
+    if (has_type_prefix(buf)) return TOK_TYPED;
     return TOK_WORD;
 }
 
@@ -88,6 +105,22 @@ static void lex_global_ref(TokenVec *out, const char **pp, size_t line) {
     buf[n] = '\0';
     token_push(out, TOK_WORD, buf, line);
     *pp = p;
+}
+
+// Decode a single escape character after a backslash.
+static char decode_escape(char c, size_t line) {
+    switch (c) {
+    case 'n':  return '\n';
+    case 'r':  return '\r';
+    case 't':  return '\t';
+    case '0':  return '\0';
+    case '\\': return '\\';
+    case '\'': return '\'';
+    case '"':  return '"';
+    default:
+        fatal_at(line, "unknown escape sequence '\\%c'", c);
+    }
+    return 0;
 }
 
 void lex_source(const char *src, TokenVec *out) {
@@ -157,6 +190,23 @@ void lex_source(const char *src, TokenVec *out) {
             ++p;
             buf[n] = '\0';
             k = TOK_STRING;
+        } else if (*p == '\'') {
+            // Character literal: 'c', '\n', '\x41', etc.
+            ++p;
+            if (*p == '\\') {
+                ++p;
+                if (!*p) fatal_at(line, "unterminated escape in char literal");
+                buf[0] = decode_escape(*p, line);
+                ++p;
+            } else {
+                if (!*p || *p == '\n') fatal_at(line, "empty char literal");
+                buf[0] = *p;
+                ++p;
+            }
+            if (*p != '\'') fatal_at(line, "unterminated char literal");
+            ++p;
+            buf[1] = '\0';
+            k = TOK_CHAR;
         } else if (*p == '&' || (*p == '*' && is_ident_start((unsigned char)p[1]))) {
             // '&name' and '*name' are reference tokens. A standalone '*' is
             // deliberately NOT a reference: it is the multiplication operator.
