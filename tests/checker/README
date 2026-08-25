@@ -1,0 +1,8 @@
+// Checker tests for ir_apply() and ir_check().
+//
+// ok_* programs: should compile without checker errors
+// err_* programs: should produce checker errors on stderr
+//
+// Optimizer consistency is verified by the pipeline: ir_build → ir_optimize
+// → ir_check → ir_lower.  All ok_* programs exercise constant folding (e.g.
+// "1 2 +" folds to CONST_I64 3) and the checker must pass on the folded IR.

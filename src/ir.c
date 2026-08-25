@@ -472,84 +472,241 @@ size_t ir_optimize(IrNode *ir, size_t n) {
 }
 
 // ---------------------------------------------------------------------------
-//  Stack effect table — single source of truth
+//  Stack state — simple grow-only TypeKind stack
 // ---------------------------------------------------------------------------
 
-IrEffect ir_stack_effect(IrKind k) {
-    // clang-format off
-    static const IrEffect table[IR_COUNT] = {
-        [IR_CONST_I64]  = { +1, false },
-        [IR_CONST_U64]  = { +1, false },
-        [IR_CONST_F64]  = { +1, false },
-        [IR_CONST_STR]  = { +1, false },
-        [IR_PUSH_LABEL] = { +1, false },
-        [IR_VAR]        = {  0, true  },   // -1 (declare) or +1 (load)
-        [IR_REF]        = { +1, false },
-        [IR_DEREF]      = { +1, false },
-        [IR_CAST]       = {  0, false },
-        [IR_ARITH]      = { -1, false },   // pop 2, push 1
-        [IR_CMP]        = { -1, false },
-        [IR_ASSIGN]     = { -2, false },   // pop ptr + val
-        [IR_ALLOC]      = {  0, false },   // pop bytes, push mem
-        [IR_HALLOC]     = {  0, false },
-        [IR_FREE]       = { -1, false },
-        [IR_MREAD]      = { -1, false },   // pop offset+mem, push val
-        [IR_WRITE]      = { -3, false },   // pop offset+mem+val
-        [IR_PRINT]      = { -1, false },
-        [IR_PRINTLN]    = {  0, false },
-        [IR_PRINTSTR]   = { -1, false },
-        [IR_READ]       = { +1, false },
-        [IR_DUP]        = { +1, false },
-        [IR_DROP]       = { -1, false },
-        [IR_SWAP]       = {  0, false },
-        [IR_ASSERT]     = { -1, false },
-        [IR_IMPORT]     = {  0, true  },   // unknown effect
-        [IR_CALL]       = {  0, true  },   // unknown effect
-        [IR_CALL_IND]   = {  0, true  },
-        [IR_JMP]        = {  0, false },
-        [IR_JZ]         = { -1, false },
-        [IR_JNZ]        = { -1, false },
-        [IR_JMP_DYN]    = { -1, false },   // pop target
-        [IR_JZ_DYN]     = { -2, false },   // pop target + cond
-        [IR_JNZ_DYN]    = { -2, false },
-        [IR_RET]        = {  0, false },
-        [IR_HALT]       = {  0, false },
-        [IR_LABEL_DEF]  = {  0, false },
-        [IR_DEAD]       = {  0, false },
-    };
-    // clang-format on
-    return table[k];
+void stack_push(StackState *s, TypeKind t) {
+    VEC_GROW(s->v, s->n, s->cap, TypeKind);
+    s->v[s->n++] = t;
 }
 
-// Minimum pops needed before an instruction (ignores pushes).
-// Returns 0 for instructions that need nothing on the stack.
-static int ir_min_pops(IrKind k) {
-    switch (k) {
-    case IR_ARITH: case IR_CMP: case IR_MREAD:     return 2;
-    case IR_ASSIGN:                                  return 2;
-    case IR_WRITE:                                   return 3;
-    case IR_DROP: case IR_FREE: case IR_PRINT:
-    case IR_PRINTSTR: case IR_ASSERT:                return 1;
-    case IR_JZ: case IR_JNZ:                         return 1;
-    case IR_JMP_DYN:                                 return 1;
-    case IR_JZ_DYN: case IR_JNZ_DYN:                 return 2;
-    default:                                         return 0;
+bool stack_pop(StackState *s, TypeKind *out) {
+    if (s->n == 0) return false;
+    *out = s->v[--s->n];
+    return true;
+}
+
+bool stack_peek(const StackState *s, TypeKind *out) {
+    if (s->n == 0) return false;
+    *out = s->v[s->n - 1];
+    return true;
+}
+
+StackState stack_clone(const StackState *s) {
+    StackState r = {0};
+    if (s->n) {
+        r.v = malloc(s->n * sizeof(TypeKind));
+        if (!r.v) die_oom();
+        memcpy(r.v, s->v, s->n * sizeof(TypeKind));
+        r.n = r.cap = s->n;
+    }
+    return r;
+}
+
+bool stack_equal(const StackState *a, const StackState *b) {
+    if (a->n != b->n) return false;
+    for (size_t i = 0; i < a->n; ++i)
+        if (a->v[i] != b->v[i]) return false;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+//  Type helpers
+// ---------------------------------------------------------------------------
+
+static bool is_numeric(TypeKind t) {
+    return t == T_I64 || t == T_U64 || t == T_F64;
+}
+
+static bool is_condition(TypeKind t) {
+    return t == T_BOOL || t == T_I64 || t == T_U64;
+}
+
+// ---------------------------------------------------------------------------
+//  ir_apply — apply one IR instruction to a StackState
+// ---------------------------------------------------------------------------
+
+static void ir_error(const IrNode *ir, const char *msg) {
+    fprintf(stderr, "check: %s before '%s'\n",
+            msg, ir->text ? ir->text : "?");
+    if (ir->line) fprintf(stderr, "  (line %zu)\n", ir->line);
+}
+
+bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
+    TypeKind a, b;
+    (void)fn;
+
+    switch (ir->kind) {
+    case IR_DEAD:
+    case IR_LABEL_DEF:
+        return true;
+
+    // — push one value —
+    case IR_CONST_I64:  stack_push(stack, T_I64);   return true;
+    case IR_CONST_U64:  stack_push(stack, T_U64);   return true;
+    case IR_CONST_F64:  stack_push(stack, T_F64);   return true;
+    case IR_CONST_STR:  stack_push(stack, T_MEM);    return true;
+    case IR_PUSH_LABEL: stack_push(stack, T_LABEL);  return true;
+    case IR_REF:        stack_push(stack, T_PTR);    return true;
+    case IR_DEREF:      stack_push(stack, T_I64);   return true;
+
+    // — IR_VAR: ambiguous (declare or load) —
+    case IR_VAR:
+        // In the linear checker, treat as +1 (load); declare case handled
+        // by ir_check's range propagation.
+        stack_push(stack, ir->ty);
+        return true;
+
+    // — cast: consume top, push cast type —
+    case IR_CAST:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow"); return false; }
+        stack_push(stack, ir->ty);
+        return true;
+
+    // — arithmetic: T T → T —
+    case IR_ARITH:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before arith"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before arith"); return false; }
+        if (a != b) {
+            fprintf(stderr, "check: type mismatch in '%s': %s %s\n",
+                    ir->text ? ir->text : "arith",
+                    type_name(a), type_name(b));
+            return false;
+        }
+        if (!is_numeric(a)) {
+            fprintf(stderr, "check: arith on non-numeric type %s\n", type_name(a));
+            return false;
+        }
+        stack_push(stack, a);
+        return true;
+
+    // — comparison: T T → bool —
+    case IR_CMP:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before cmp"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before cmp"); return false; }
+        if (a != b) {
+            fprintf(stderr, "check: type mismatch in '%s': %s %s\n",
+                    ir->text ? ir->text : "cmp",
+                    type_name(a), type_name(b));
+            return false;
+        }
+        stack_push(stack, T_BOOL);
+        return true;
+
+    // — assignment: ptr T → —
+    case IR_ASSIGN:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before '='"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before '='"); return false; }
+        return true;
+
+    // — memory: alloc/halloc —
+    case IR_ALLOC:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before alloc"); return false; }
+        stack_push(stack, T_MEMPTR);
+        return true;
+    case IR_HALLOC:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before halloc"); return false; }
+        stack_push(stack, T_MEMPTR);
+        return true;
+    case IR_FREE:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before free"); return false; }
+        return true;
+
+    // — mread: T mem → val —
+    case IR_MREAD:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before mread"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before mread"); return false; }
+        stack_push(stack, ir->ty);
+        return true;
+
+    // — write: T mem val → —
+    case IR_WRITE:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before write"); return false; }
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before write"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before write"); return false; }
+        return true;
+
+    // — print / printn: T → —
+    case IR_PRINT:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before print"); return false; }
+        return true;
+    // — println: —
+    case IR_PRINTLN:
+        return true;
+    // — printstr: mem → —
+    case IR_PRINTSTR:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before printstr"); return false; }
+        return true;
+
+    // — read: → val —
+    case IR_READ:
+        stack_push(stack, ir->ty);
+        return true;
+
+    // — stack ops —
+    case IR_DUP:
+        if (!stack_peek(stack, &a)) { ir_error(ir, "stack underflow before dup"); return false; }
+        stack_push(stack, a);
+        return true;
+    case IR_DROP:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before drop"); return false; }
+        return true;
+    case IR_SWAP: {
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before swap"); return false; }
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before swap"); return false; }
+        stack_push(stack, a);
+        stack_push(stack, b);
+        return true;
+    }
+
+    // — assert: condition → —
+    case IR_ASSERT:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before assert"); return false; }
+        return true;
+
+    // — calls / imports: unknown effect (handled by ir_check) —
+    case IR_CALL:
+    case IR_CALL_IND:
+    case IR_IMPORT:
+        return true;
+
+    // — control flow —
+    case IR_JMP:
+        return true;
+    case IR_JZ:
+    case IR_JNZ:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before branch"); return false; }
+        if (!is_condition(a)) {
+            fprintf(stderr, "check: branch on non-condition type %s\n", type_name(a));
+            return false;
+        }
+        return true;
+    case IR_JMP_DYN:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before jump"); return false; }
+        return true;
+    case IR_JZ_DYN:
+    case IR_JNZ_DYN:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before branch"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before branch"); return false; }
+        return true;
+
+    case IR_RET:
+    case IR_HALT:
+        return true;
+
+    default:
+        return true;
     }
 }
 
 // ---------------------------------------------------------------------------
-//  Checker — label-aware stack-depth propagation
-//
-// Stack depth is tracked as a range [lo, hi] to handle IR_VAR's ambiguity
-// (load-or-declare: -1 or +1).  A worklist of (position, lo, hi) frames
-// is processed until fixpoint.  Errors are reported only when lo < 0
-// (definite underflow).
+//  Checker — label-aware stack propagation using ir_apply()
 // ---------------------------------------------------------------------------
 
-typedef struct { size_t pos; int lo, hi; } CfgFrame;
+typedef struct { size_t pos; StackState stack; } CfgFrame;
 
 bool ir_check(const IrNode *ir, size_t n, FuncSym *fn) {
-    if (!fn || fn->labels.n == 0) return true;
+    if (!fn) return true;
 
     // 1. Build label → IR position index.
     size_t *label_pos = malloc(fn->labels.n * sizeof(size_t));
@@ -559,102 +716,82 @@ bool ir_check(const IrNode *ir, size_t n, FuncSym *fn) {
             label_pos[ir[i].label_idx] = i;
     }
 
-    // 2. Per-label depth range state (-1 = unknown).
-    int *label_lo = malloc(fn->labels.n * sizeof(int));
-    int *label_hi = malloc(fn->labels.n * sizeof(int));
-    for (size_t i = 0; i < fn->labels.n; ++i) {
-        label_lo[i] = -1;
-        label_hi[i] = -1;
-    }
+    // 2. Per-label stack state (NULL = unknown).
+    StackState *label_stack = calloc(fn->labels.n, sizeof(StackState));
 
     // 3. Worklist.
     CfgFrame *wl = NULL;
     size_t wl_n = 0, wl_cap = 0;
-    #define WL_PUSH(p, l, h) do { \
+    #define WL_PUSH(p, s) do { \
         VEC_GROW(wl, wl_n, wl_cap, CfgFrame); \
-        wl[wl_n++] = (CfgFrame){(p), (l), (h)}; \
+        wl[wl_n++] = (CfgFrame){(p), stack_clone(&(s))}; \
     } while (0)
-    WL_PUSH(0, 0, 0);
+
+    StackState init = {0};
+    WL_PUSH(0, init);
 
     bool ok = true;
 
-    // 4. Process worklist until fixpoint.
+    // 4. Process worklist.
     while (wl_n > 0) {
         CfgFrame cur = wl[--wl_n];
         size_t pos = cur.pos;
-        int lo = cur.lo, hi = cur.hi;
+        StackState stack = cur.stack;
 
         while (pos < n) {
             if (ir[pos].kind == IR_DEAD) { ++pos; continue; }
 
-            // — label definition: record or verify depth range —
+            // — label definition: record or verify stack depth —
             if (ir[pos].kind == IR_LABEL_DEF) {
                 int id = (int)ir[pos].label_idx;
                 if (id >= 0) {
-                    if (label_lo[id] < 0) {
-                        // First visit: record and continue.
-                        label_lo[id] = lo;
-                        label_hi[id] = hi;
-                        WL_PUSH(pos + 1, lo, hi);
+                    if (label_stack[id].v == NULL) {
+                        label_stack[id] = stack_clone(&stack);
+                        WL_PUSH(pos + 1, stack);
+                    } else if (label_stack[id].n != stack.n) {
+                        fprintf(stderr, "check %s:%zu: label '%s' reached with "
+                                "depth %zu, expected %zu\n",
+                                fn->name, ir[pos].line,
+                                fn->labels.v[id].name,
+                                stack.n, label_stack[id].n);
+                        ok = false;
+                        label_stack[id].n = stack.n;
+                        WL_PUSH(pos + 1, stack);
                     } else {
-                        // Already known: verify overlap.
-                        int nlo = lo < label_lo[id] ? lo : label_lo[id];
-                        int nhi = hi > label_hi[id] ? hi : label_hi[id];
-                        if (nlo != label_lo[id] || nhi != label_hi[id]) {
-                            label_lo[id] = nlo;
-                            label_hi[id] = nhi;
-                            WL_PUSH(pos + 1, nlo, nhi);
-                        }
+                        // Same depth already explored. Don't re-walk.
+                        break;
                     }
                 }
                 ++pos;
                 continue;
             }
 
-            // — apply stack effect —
-            IrEffect eff = ir_stack_effect(ir[pos].kind);
-            int pops = ir_min_pops(ir[pos].kind);
-
-            // Error only when even the best-case depth is insufficient.
-            if (hi < pops) {
-                fprintf(stderr, "check %s:%zu: stack underflow before '%s'"
-                        " (need %d, have %d..%d)\n",
-                        fn->name, ir[pos].line,
-                        ir[pos].text ? ir[pos].text : "?",
-                        pops, lo, hi);
+            // — apply instruction —
+            if (!ir_apply(&ir[pos], &stack, fn))
                 ok = false;
-            }
-            if (eff.ambig) {
-                lo--;
-                hi++;
-            } else {
-                lo += eff.net;
-                hi += eff.net;
-            }
-            // Clamp lo to 0: negative lo means "might be empty", not "definitely underflow".
-            if (lo < 0) lo = 0;
 
             // — terminal —
             if (ir[pos].kind == IR_RET || ir[pos].kind == IR_HALT) break;
 
-            // — calls / imports: unknown effect, widen range —
+            // — calls / imports: fork both possibilities —
             if (ir[pos].kind == IR_CALL || ir[pos].kind == IR_CALL_IND ||
                 ir[pos].kind == IR_IMPORT) {
                 ++pos;
-                // The call could have consumed everything (depth=0) or
-                // left the stack intact.  Fork both.
-                WL_PUSH(pos, 0, 0);
-                WL_PUSH(pos, lo, hi);
+                // Assume call consumed nothing (keep stack as-is)
+                WL_PUSH(pos, stack);
+                // Assume call consumed all known args (empty stack)
+                StackState empty = {0};
+                WL_PUSH(pos, empty);
                 break;
             }
 
-            // — static jump: propagate to target —
+            // — static jump —
             if ((ir[pos].kind == IR_JMP || ir[pos].kind == IR_JZ ||
                  ir[pos].kind == IR_JNZ) && ir[pos].aux >= 0) {
                 int tid = (int)ir[pos].aux;
                 if (tid >= 0 && (size_t)tid < fn->labels.n &&
                     label_pos[tid] != SIZE_MAX) {
-                    WL_PUSH(label_pos[tid], lo, hi);
+                    WL_PUSH(label_pos[tid], stack);
                 }
                 if (ir[pos].kind != IR_JMP) break; // jz/jnz fall-through ends
                 break;
@@ -662,12 +799,14 @@ bool ir_check(const IrNode *ir, size_t n, FuncSym *fn) {
 
             ++pos;
         }
+        free(stack.v);
     }
     #undef WL_PUSH
 
+    for (size_t i = 0; i < fn->labels.n; ++i)
+        free(label_stack[i].v);
+    free(label_stack);
     free(label_pos);
-    free(label_lo);
-    free(label_hi);
     free(wl);
     return ok;
 }

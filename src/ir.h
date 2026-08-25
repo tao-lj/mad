@@ -46,17 +46,32 @@ typedef struct {
                        // PUSH_LABEL, and static JMP/JZ/JNZ targets; -1 if N/A
 } IrNode;
 
-// Stack effect of an instruction: net = pushes - pops.
-// `ambig` is true for IR_VAR (load-or-declare: -1 or +1).
-typedef struct { int8_t net; bool ambig; } IrEffect;
+// ---------------------------------------------------------------------------
+//  Stack state — type-aware verifier stack
+// ---------------------------------------------------------------------------
 
-// Single source of truth for every IrKind's stack effect.
-IrEffect ir_stack_effect(IrKind k);
+typedef struct {
+    TypeKind *v;
+    size_t n;
+    size_t cap;
+} StackState;
+
+void stack_push(StackState *s, TypeKind t);
+bool stack_pop(StackState *s, TypeKind *out);
+bool stack_peek(const StackState *s, TypeKind *out);
+StackState stack_clone(const StackState *s);
+bool stack_equal(const StackState *a, const StackState *b);
+
+// ---------------------------------------------------------------------------
+//  ir_apply — apply a single IR instruction to a StackState
+//
+//  Returns true on success, false on type/stack error (message printed to
+//  stderr).  `fn` is needed for CALL/RET signature checking.
+// ---------------------------------------------------------------------------
+
+bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn);
 
 // Build IR from a function body token range.
-// *out_map is a malloc'd array of size (body_end - body_start) mapping
-// body-relative token index → IR index (or SIZE_MAX if none).  Caller must
-// free *out_map after ir_lower.
 IrNode *ir_build(VM *vm, FuncSym *fn, size_t *out_n, size_t **out_map);
 
 // Constant-fold and eliminate dead pairs in-place.
@@ -66,9 +81,7 @@ size_t ir_optimize(IrNode *ir, size_t n);
 // Returns true if no errors found.
 bool ir_check(const IrNode *ir, size_t n, FuncSym *fn);
 
-// Lower IR to threaded Op array.  Resolves jump targets, fills dispatch
-// labels, builds code_map.  The map (body-relative token index → op index)
-// is rebuilt from ir_build's map and stored on fn->code_map.
+// Lower IR to threaded Op array.
 void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
               const size_t *ir_map, size_t ir_map_n);
 

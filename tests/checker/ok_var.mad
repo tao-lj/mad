@@ -1,0 +1,4 @@
+0 x@i64
+1 &x =
+x drop
+halt

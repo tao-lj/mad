@@ -1,0 +1,4 @@
+1 dup + drop
+1 2 swap - drop
+1 drop
+halt
