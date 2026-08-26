@@ -61,6 +61,7 @@ typedef struct {
     MemPtrVec memptrs;
     VarVec globals;
     FuncVec funcs;
+    FileVec files;   // open-file handles (NULL = closed slot)
     ValStack stack;
     FrameVec frames;
     bool halted;

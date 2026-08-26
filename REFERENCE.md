@@ -28,6 +28,7 @@ Complete tables of types, literals, and operators. See [`MANUAL.md`](MANUAL.md) 
 | `ptr` | variable pointer | `&variable` |
 | `label` | first-class label | `&label` |
 | `func` | first-class function | `&function_name` |
+| `file` | open file handle | `fopen` |
 
 ## Literals
 
@@ -156,6 +157,11 @@ Integer→label is forbidden.
 | `assert` | `( flag -- )` | abort if false |
 | `call` | `( func -- )` | indirect function call |
 | `import` | `( path -- )` | import module file |
+| `fopen` | `( path mode -- file )` | open file; fatal on failure |
+| `fclose` | `( file -- )` | close file handle |
+| `fsize` | `( file -- i64 )` | query file size without moving position |
+| `fread` | `( file n -- count mem )` | read up to n bytes; count≤n |
+| `fwrite` | `( buf file -- written )` | write buf contents; returns bytes written |
 | `jmp` / `jump` | `( -- )` | unconditional jump (static or dynamic) |
 | `jz` | `( condition -- )` | jump if zero/false |
 | `jnz` | `( condition -- )` | jump if nonzero/true |

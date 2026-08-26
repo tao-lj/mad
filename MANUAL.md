@@ -48,7 +48,7 @@ Common scalar types (see [`REFERENCE.md`](REFERENCE.md) for full list):
 | `bool` | 1 | result of comparisons, `!`, `&&`, `\|\|` |
 | `char` | 1 | `'c'` |
 
-Handle types: `mem`, `memptr`, `ptr`, `label`, `func`.
+Handle types: `mem`, `memptr`, `ptr`, `label`, `func`, `file`.
 
 All scalar values are stored inline in the `Value` union — no pool indirection.
 Handles store a uint64 id in the same union.
@@ -112,6 +112,11 @@ User-defined functions/labels shadow built-in words of the same name.
 | `ret` / `halt` | `( -- )` | return / terminate program |
 | `assert` | `( flag -- )` | abort if false |
 | `import` | `( path -- )` | import module file |
+| `fopen` | `( path mode -- file )` | open file; fatal on failure |
+| `fclose` | `( file -- )` | close file handle |
+| `fsize` | `( file -- i64 )` | query file size without moving position |
+| `fread` | `( file n -- count mem )` | read up to n bytes; count≤n |
+| `fwrite` | `( buf file -- written )` | write buf contents; returns bytes written |
 
 `T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}.
 
@@ -207,6 +212,28 @@ stdin is parsed by `read@T`: integers decimal, floats by format, char reads one
 byte skipping whitespace, bool accepts `true`/`false`/`1`/`0`. Failure is an error.
 stdout adds no automatic separators — use `" " printstr` if needed.
 `print` renders handles as `<type:id>`.
+
+**File I/O:**
+
+`fopen` takes two mem strings (path and mode, e.g. `"r"`, `"w"`) and returns a
+`file` handle. All file operations fatal on error (open failure, closed handle,
+invalid id). `fread` allocates a frame-lifetime buffer and reads up to `n` bytes;
+`fwrite` writes the entire contents of a mem/memptr buffer.
+
+`fsize` queries the file size via `fseek`/`ftell` without moving the current
+position. File handles are automatically closed at program exit.
+
+```mad
+"/tmp/out.txt" "w" fopen f@file
+"hello" f fwrite drop       // drop byte-count result
+f fclose
+
+"/tmp/out.txt" "r" fopen g@file
+g fsize n@i64
+g n fread data@mem drop     // drop byte-count result
+data printstr println
+g fclose
+```
 
 All errors print `line: message` and exit immediately. No exceptions, no recovery.
 

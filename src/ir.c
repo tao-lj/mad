@@ -383,6 +383,13 @@ static void irb_word(IrBuilder *b, const Token *t) {
     if (word_is(s, "assert"))   { irb_emit(b, IR_ASSERT, t); return; }
     if (word_is(s, "import"))   { irb_emit(b, IR_IMPORT, t); return; }
 
+    // File I/O
+    if (word_is(s, "fopen"))  { irb_emit(b, IR_FOPEN, t);  tys_push(b, T_FILE); return; }
+    if (word_is(s, "fclose")) { irb_emit(b, IR_FCLOSE, t); return; }
+    if (word_is(s, "fsize"))  { irb_emit(b, IR_FSIZE, t);  tys_push(b, T_I64);  return; }
+    if (word_is(s, "fread"))  { irb_emit(b, IR_FREAD, t);  return; }
+    if (word_is(s, "fwrite")) { irb_emit(b, IR_FWRITE, t); tys_push(b, T_I64);  return; }
+
     // Fallback: variable load or implicit declaration from the stack top.
     char base[MAX_NAME];
     bool has_ty = false;
@@ -1052,6 +1059,35 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
     case IR_IMPORT:
         return true;
 
+    // — file I/O: fopen path mode → file —
+    case IR_FOPEN:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before fopen"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before fopen"); return false; }
+        stack_push(stack, T_FILE);
+        return true;
+    // — fclose: file → —
+    case IR_FCLOSE:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before fclose"); return false; }
+        return true;
+    // — fsize: file → i64 —
+    case IR_FSIZE:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before fsize"); return false; }
+        stack_push(stack, T_I64);
+        return true;
+    // — fread: file n → count memptr —
+    case IR_FREAD:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before fread"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before fread"); return false; }
+        stack_push(stack, T_I64);
+        stack_push(stack, T_MEMPTR);
+        return true;
+    // — fwrite: buf file → written —
+    case IR_FWRITE:
+        if (!stack_pop(stack, &b)) { ir_error(ir, "stack underflow before fwrite"); return false; }
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before fwrite"); return false; }
+        stack_push(stack, T_I64);
+        return true;
+
     // — control flow —
     case IR_JMP:
         return true;
@@ -1341,6 +1377,11 @@ void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
         case IR_SWAP:   op->code = dt[OP_SWAP];   break;
         case IR_ASSERT: op->code = dt[OP_ASSERT]; break;
         case IR_IMPORT: op->code = dt[OP_IMPORT]; break;
+        case IR_FOPEN:  op->code = dt[OP_FOPEN];  break;
+        case IR_FCLOSE: op->code = dt[OP_FCLOSE]; break;
+        case IR_FSIZE:  op->code = dt[OP_FSIZE];  break;
+        case IR_FREAD:  op->code = dt[OP_FREAD];  break;
+        case IR_FWRITE: op->code = dt[OP_FWRITE]; break;
         case IR_CALL:
             op->code = dt[OP_CALL_FUNC];
             op->u.i  = ir[i].u.i;

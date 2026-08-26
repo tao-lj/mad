@@ -171,6 +171,7 @@ static Value cast_value(VM *vm, Value v, TypeKind ty, size_t line) {
     case T_MEM:
     case T_MEMPTR:
     case T_PTR:
+    case T_FILE:
         break;
     }
     fatal_at(line, "unsupported cast from %s to %s", type_name(v.type), type_name(ty));
@@ -198,6 +199,7 @@ static void print_value(VM *vm, Value v) {
     case T_PTR: printf("<ptr:%" PRIu64 ">", v.as.u64); break;
     case T_LABEL: printf("<label:%" PRIu64 ">", v.as.u64); break;
     case T_FUNC: printf("<func:%" PRIu64 ">", v.as.u64); break;
+    case T_FILE: printf("<file:%" PRIu64 ">", v.as.u64); break;
     case T_NONE: printf("<?>");
     }
 }
@@ -216,6 +218,17 @@ static MemObj *require_mem(VM *vm, uint64_t mid, size_t line) {
     if (mid >= vm->mems.n || vm->mems.v[mid].data == NULL)
         fatal_at(line, "invalid or freed memory object");
     return &vm->mems.v[mid];
+}
+
+static FILE *require_file(VM *vm, Value v, size_t line) {
+    if (v.type != T_FILE)
+        fatal_at(line, "expected file, got %s", type_name(v.type));
+    if (v.as.u64 >= vm->files.n)
+        fatal_at(line, "invalid file handle");
+    FILE *fp = vm->files.v[v.as.u64];
+    if (!fp)
+        fatal_at(line, "use of closed file handle");
+    return fp;
 }
 
 // ---------- Frame-local memory tracking ----------
@@ -548,6 +561,11 @@ static void execute_code(VM *vm, FuncSym *fn) {
         disp[OP_SWAP] = &&L_SWAP;
         disp[OP_ASSERT] = &&L_ASSERT;
         disp[OP_IMPORT] = &&L_IMPORT;
+        disp[OP_FOPEN]  = &&L_FOPEN;
+        disp[OP_FCLOSE] = &&L_FCLOSE;
+        disp[OP_FSIZE]  = &&L_FSIZE;
+        disp[OP_FREAD]  = &&L_FREAD;
+        disp[OP_FWRITE] = &&L_FWRITE;
         disp[OP_CALL_FUNC] = &&L_CALL_FUNC;
         disp[OP_CALL_IND] = &&L_CALL_IND;
         disp[OP_JMP] = &&L_JMP;
@@ -1182,6 +1200,80 @@ L_IMPORT:
     if (vm->halted) return;
     NEXT();
 
+// ---------- File I/O ----------
+
+L_FOPEN: {
+    Value mode = valstack_pop(st, ip->text);
+    Value path = valstack_pop(st, ip->text);
+    uint64_t mid_mode = mem_id_of(vm, mode, ip->line, "fopen mode");
+    MemObj *mm = require_mem(vm, mid_mode, ip->line);
+    if (!memchr(mm->data, '\0', mm->len))
+        fatal_at(ip->line, "fopen mode is not NUL-terminated");
+    uint64_t mid_path = mem_id_of(vm, path, ip->line, "fopen path");
+    MemObj *mp = require_mem(vm, mid_path, ip->line);
+    if (!memchr(mp->data, '\0', mp->len))
+        fatal_at(ip->line, "fopen path is not NUL-terminated");
+    FILE *fp = fopen((const char *)mp->data, (const char *)mm->data);
+    if (!fp) fatal_at(ip->line, "cannot open '%s' (mode '%s')",
+                      (const char *)mp->data, (const char *)mm->data);
+    VEC_GROW(vm->files.v, vm->files.n, vm->files.cap, FILE *);
+    uint64_t id = vm->files.n;
+    vm->files.v[vm->files.n++] = fp;
+    valstack_push(st, (Value){T_FILE, .as.u64 = id});
+    NEXT();
+}
+
+L_FCLOSE: {
+    Value v = valstack_pop(st, ip->text);
+    uint64_t id = v.as.u64;
+    if (v.type != T_FILE) fatal_at(ip->line, "fclose expects file, got %s", type_name(v.type));
+    if (id >= vm->files.n) fatal_at(ip->line, "invalid file handle");
+    FILE *fp = vm->files.v[id];
+    if (!fp) fatal_at(ip->line, "fclose on already-closed file");
+    fclose(fp);
+    vm->files.v[id] = NULL;
+    NEXT();
+}
+
+L_FSIZE: {
+    Value v = valstack_pop(st, ip->text);
+    FILE *fp = require_file(vm, v, ip->line);
+    long cur = ftell(fp);
+    if (fseek(fp, 0, SEEK_END) != 0) fatal_at(ip->line, "fseek failed");
+    long sz = ftell(fp);
+    if (fseek(fp, cur, SEEK_SET) != 0) fatal_at(ip->line, "fseek failed");
+    valstack_push(st, make_i64((int64_t)sz));
+    NEXT();
+}
+
+L_FREAD: {
+    Value vcount = valstack_pop(st, ip->text);
+    Value vfile  = valstack_pop(st, ip->text);
+    FILE *fp = require_file(vm, vfile, ip->line);
+    int64_t count = get_i64(vm, vcount, ip->line);
+    if (count < 0) fatal_at(ip->line, "fread count must be non-negative");
+    uint8_t *buf = malloc((size_t)count + 1);
+    if (!buf) die_oom();
+    size_t got = fread(buf, 1, (size_t)count, fp);
+    buf[got] = '\0';
+    uint64_t mid = mem_adopt(&vm->mems, buf, got, false, false);
+    frame_track_local_mem(current_frame(vm), mid);
+    valstack_push(st, make_i64((int64_t)got));
+    valstack_push(st, (Value){T_MEM, .as.u64 = mid});
+    NEXT();
+}
+
+L_FWRITE: {
+    Value vfile = valstack_pop(st, ip->text);
+    Value vbuf  = valstack_pop(st, ip->text);
+    FILE *fp = require_file(vm, vfile, ip->line);
+    uint64_t mid = mem_id_of(vm, vbuf, ip->line, "fwrite buffer");
+    MemObj *m = require_mem(vm, mid, ip->line);
+    size_t put = fwrite(m->data, 1, m->len, fp);
+    valstack_push(st, make_i64((int64_t)put));
+    NEXT();
+}
+
 L_CALL_FUNC:
     call_by_value(vm, &vm->funcs.v[ip->u.i], ip->line, ip->text);
     if (vm->halted) return;
@@ -1314,4 +1406,7 @@ void vm_free(VM *vm) {
         free(vm->frames.v[i].local_mems);
     }
     free(vm->frames.v);
+    for (size_t i = 0; i < vm->files.n; ++i)
+        if (vm->files.v[i]) fclose(vm->files.v[i]);
+    free(vm->files.v);
 }

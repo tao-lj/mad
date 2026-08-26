@@ -52,3 +52,10 @@ Implementation notes: states, thresholds, degree tables, worklist queue and
 dense matrices are all flat `mem` blocks (element `i` at offset `i * 8`,
 cell `(i,j)` at `(i * (n + 1) + j) * 8`); worklist-based propagation where
 calm neurons still release successors so zero-signal paths never stall.
+
+## fileio
+
+File I/O round trip: opens a file for writing with `fopen`, writes a string
+with `fwrite`, closes it, reopens for reading with `fopen`, queries size with
+`fsize`, reads back with `fread`, prints with `printstr`, and closes. Exercises
+the `file` handle type and all five file I/O built-in words.

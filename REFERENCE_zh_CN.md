@@ -28,6 +28,7 @@
 | `ptr` | 变量指针 | `&变量` |
 | `label` | 一等标签值 | `&label` |
 | `func` | 一等函数值 | `&函数名` |
+| `file` | 打开的文件句柄 | `fopen` |
 
 ## 字面量
 
@@ -156,6 +157,11 @@
 | `assert` | `( flag -- )` | 为假则中止 |
 | `call` | `( func -- )` | 间接函数调用 |
 | `import` | `( path -- )` | 导入模块 |
+| `fopen` | `( path mode -- file )` | 打开文件；失败则报错 |
+| `fclose` | `( file -- )` | 关闭文件句柄 |
+| `fsize` | `( file -- i64 )` | 查询文件大小（不移动位置） |
+| `fread` | `( file n -- count mem )` | 读取最多 n 字节；count≤n |
+| `fwrite` | `( buf file -- written )` | 写入 buf 全部内容；返回写入字节数 |
 | `jmp` / `jump` | `( -- )` | 无条件跳转 |
 | `jz` | `( condition -- )` | 为零/false 时跳转 |
 | `jnz` | `( condition -- )` | 非零/true 时跳转 |

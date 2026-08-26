@@ -26,6 +26,7 @@ const char *type_name(TypeKind t) {
     case T_PTR:    return "ptr";
     case T_LABEL:  return "label";
     case T_FUNC:   return "func";
+    case T_FILE:   return "file";
     case T_NONE:   return "?";
     }
     return "?";
@@ -51,6 +52,7 @@ bool is_type_name(const char *s, TypeKind *out) {
     if (strcmp(s, "ptr") == 0)    { *out = T_PTR;    return true; }
     if (strcmp(s, "label") == 0)  { *out = T_LABEL;  return true; }
     if (strcmp(s, "func") == 0)   { *out = T_FUNC;   return true; }
+    if (strcmp(s, "file") == 0)   { *out = T_FILE;   return true; }
     return false;
 }
 
@@ -156,6 +158,17 @@ uint64_t mem_new(MemVec *mv, size_t n, bool heap, bool ro) {
     m->data = calloc(n ? n : 1, 1);
     if (!m->data) die_oom();
     m->len = n;
+    m->heap = heap;
+    m->readonly = ro;
+    m->id = mv->n;
+    return mv->n++;
+}
+
+uint64_t mem_adopt(MemVec *mv, uint8_t *data, size_t len, bool heap, bool ro) {
+    VEC_GROW(mv->v, mv->n, mv->cap, MemObj);
+    MemObj *m = &mv->v[mv->n];
+    m->data = data;
+    m->len = len;
     m->heap = heap;
     m->readonly = ro;
     m->id = mv->n;

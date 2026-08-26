@@ -43,7 +43,7 @@ MAD（**MAD Ain't Disciplined**）以后缀记法 + 数据栈为核心，无语�
 | `bool` | 1 | 比较结果、`!`、`&&`、`\|\|` |
 | `char` | 1 | `'c'` |
 
-句柄类型：`mem`、`memptr`、`ptr`、`label`、`func`。
+句柄类型：`mem`、`memptr`、`ptr`、`label`、`func`、`file`。
 
 所有标量值内联存储于 `Value` 联合体——无池间接引用。句柄存储 uint64 id。
 
@@ -105,6 +105,11 @@ x                // 加载 x
 | `ret` / `halt` | `( -- )` | 返回 / 终止 |
 | `assert` | `( flag -- )` | 为假则报错 |
 | `import` | `( path -- )` | 导入模块 |
+| `fopen` | `( path mode -- file )` | 打开文件；失败则报错 |
+| `fclose` | `( file -- )` | 关闭文件句柄 |
+| `fsize` | `( file -- i64 )` | 查询文件大小（不移动位置） |
+| `fread` | `( file n -- count mem )` | 读取最多 n 字节；count≤n |
+| `fwrite` | `( buf file -- written )` | 写入 buf 全部内容；返回写入字节数 |
 
 `T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}。
 
@@ -193,6 +198,28 @@ base:
 stdin 按 `read@T` 解析：整数十进制、浮点按格式、char 跳空白读一字节、
 bool 接受 `true/false/1/0`。失败报错。stdout 不自动加分隔符。
 `print` 对句柄输出 `<type:id>` 形式。
+
+**文件 I/O：**
+
+`fopen` 接受两个 mem 字符串（路径和模式，如 `"r"`、`"w"`），返回 `file`
+句柄。所有文件操作失败时直接报错（打开失败、句柄已关闭、无效 id）。
+`fread` 分配 frame-lifetime 缓冲区读取最多 `n` 字节；`fwrite` 写入整个
+mem/memptr 缓冲区。
+
+`fsize` 通过 `fseek`/`ftell` 查询文件大小，不改变当前位置。文件句柄在程序
+退出时自动关闭。
+
+```mad
+"/tmp/out.txt" "w" fopen f@file
+"hello" f fwrite drop
+f fclose
+
+"/tmp/out.txt" "r" fopen g@file
+g fsize n@i64
+g n fread data@mem drop
+data printstr println
+g fclose
+```
 
 所有错误打印 `行号: 信息` 后立即退出，无异常无恢复。
 

@@ -28,7 +28,7 @@ ideas from three traditions:
 
 The result is a language that is trivial to implement (no parser beyond a tokenizer,
 no AST, no tree-walking) yet supports recursion, first-class functions, pointers,
-memory management, module imports, and a typed IR with compile-time constant folding
+memory management, module imports, file I/O, and a typed IR with compile-time constant folding
 and typed opcode specialization.
 
 ## Build

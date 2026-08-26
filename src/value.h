@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 typedef enum {
     T_NONE,  // unknown / not yet determined (compile-time sentinel)
@@ -14,7 +15,7 @@ typedef enum {
     T_I64, T_U64,
     T_F32, T_F64,
     T_BOOL, T_CHAR,
-    T_MEM, T_MEMPTR, T_PTR, T_LABEL, T_FUNC
+    T_MEM, T_MEMPTR, T_PTR, T_LABEL, T_FUNC, T_FILE
 } TypeKind;
 
 const char *type_name(TypeKind t);
@@ -91,6 +92,14 @@ typedef struct {
 typedef struct { MemObj *v; size_t n, cap; } MemVec;
 
 uint64_t mem_new(MemVec *mv, size_t n, bool heap, bool ro);
+
+// Like mem_new but adopts an externally allocated buffer (takes ownership;
+// freed according to the heap flag like any other mem).
+uint64_t mem_adopt(MemVec *mv, uint8_t *data, size_t len, bool heap, bool ro);
+
+// Open-file handles: pool ids into a FileVec; a NULL entry marks a closed
+// file so use-after-close is detectable.
+typedef struct { FILE **v; size_t n, cap; } FileVec;
 
 // A ptr refers to a variable slot via a stable integer id.
 typedef struct {

@@ -1,0 +1,17 @@
+// File I/O: write then read back.
+
+"/tmp/mad-fileio-test.txt" "w" fopen wfile@file
+
+"hello from MAD file I/O!" wfile fwrite drop
+wfile fclose
+
+"/tmp/mad-fileio-test.txt" "r" fopen rfile@file
+
+rfile fsize sz@i64
+sz print println
+
+rfile sz fread data@mem drop
+data printstr println
+
+rfile fclose
+halt
