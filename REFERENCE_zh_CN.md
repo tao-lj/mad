@@ -148,6 +148,22 @@
 | `printstr` | `( mem/memptr -- )` | 打印 NUL 结尾字符串 |
 | `read@T` | `( -- v )` | 从 stdin 读类型化值 |
 
+### 文件 I/O
+
+| 字 | 栈效应 | 说明 |
+|----|--------|------|
+| `fopen` | `( path mode -- file )` | 打开文件；失败则报错 |
+| `fclose` | `( file -- )` | 关闭文件句柄 |
+| `fsize` | `( file -- i64 )` | 查询文件大小（不移动位置） |
+| `fread` | `( file n -- count mem )` | 读取最多 n 字节；count≤n |
+| `fwrite` | `( buf file -- written )` | 写入 buf 全部内容；返回写入字节数 |
+
+### 外部交互
+
+| 字 | 栈效应 | 说明 |
+|----|--------|------|
+| `system` | `( cmd -- rc )` | 执行 shell 命令；rc 为原始 `waitpid` 状态值 |
+
 ### 控制流
 
 | 字 | 栈效应 | 说明 |
@@ -157,12 +173,6 @@
 | `assert` | `( flag -- )` | 为假则中止 |
 | `call` | `( func -- )` | 间接函数调用 |
 | `import` | `( path -- )` | 导入模块 |
-| `fopen` | `( path mode -- file )` | 打开文件；失败则报错 |
-| `fclose` | `( file -- )` | 关闭文件句柄 |
-| `fsize` | `( file -- i64 )` | 查询文件大小（不移动位置） |
-| `fread` | `( file n -- count mem )` | 读取最多 n 字节；count≤n |
-| `fwrite` | `( buf file -- written )` | 写入 buf 全部内容；返回写入字节数 |
-| `system` | `( cmd -- rc )` | 执行 shell 命令；rc 为原始 `waitpid` 状态值 |
 | `jmp` / `jump` | `( -- )` | 无条件跳转 |
 | `jz` | `( condition -- )` | 为零/false 时跳转 |
 | `jnz` | `( condition -- )` | 非零/true 时跳转 |

@@ -108,16 +108,16 @@ User-defined functions/labels shadow built-in words of the same name.
 | `println` | `( -- )` | print newline only |
 | `printstr` | `( mem/memptr -- )` | print NUL-terminated string |
 | `read@T` | `( -- v )` | read typed value from stdin |
-| `call` | `( func -- )` | indirect function call |
-| `ret` / `halt` | `( -- )` | return / terminate program |
-| `assert` | `( flag -- )` | abort if false |
-| `import` | `( path -- )` | import module file |
 | `fopen` | `( path mode -- file )` | open file; fatal on failure |
 | `fclose` | `( file -- )` | close file handle |
 | `fsize` | `( file -- i64 )` | query file size without moving position |
 | `fread` | `( file n -- count mem )` | read up to n bytes; count≤n |
 | `fwrite` | `( buf file -- written )` | write buf contents; returns bytes written |
 | `system` | `( cmd -- rc )` | execute shell command; rc is raw `waitpid` status |
+| `call` | `( func -- )` | indirect function call |
+| `ret` / `halt` | `( -- )` | return / terminate program |
+| `assert` | `( flag -- )` | abort if false |
+| `import` | `( path -- )` | import module file |
 
 `T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}.
 

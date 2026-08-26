@@ -101,16 +101,16 @@ x                // 加载 x
 | `println` | `( -- )` | 打印换行 |
 | `printstr` | `( mem/memptr -- )` | 打印 NUL 结尾字符串 |
 | `read@T` | `( -- v )` | 读类型化 stdin 值 |
-| `call` | `( func -- )` | 间接调用 |
-| `ret` / `halt` | `( -- )` | 返回 / 终止 |
-| `assert` | `( flag -- )` | 为假则报错 |
-| `import` | `( path -- )` | 导入模块 |
 | `fopen` | `( path mode -- file )` | 打开文件；失败则报错 |
 | `fclose` | `( file -- )` | 关闭文件句柄 |
 | `fsize` | `( file -- i64 )` | 查询文件大小（不移动位置） |
 | `fread` | `( file n -- count mem )` | 读取最多 n 字节；count≤n |
 | `fwrite` | `( buf file -- written )` | 写入 buf 全部内容；返回写入字节数 |
 | `system` | `( cmd -- rc )` | 执行 shell 命令；rc 为原始 `waitpid` 状态值 |
+| `call` | `( func -- )` | 间接调用 |
+| `ret` / `halt` | `( -- )` | 返回 / 终止 |
+| `assert` | `( flag -- )` | 为假则报错 |
+| `import` | `( path -- )` | 导入模块 |
 
 `T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}。
 
