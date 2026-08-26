@@ -1,0 +1,551 @@
+// MAD-level printf: formatted output using MAD's own syntax.
+//
+// Calling convention:  [printf "fmt" arg1 arg2 ...]
+// Supported specifiers:
+//   %d %s %c %%       basic
+//   %f %lf %.nf %.nlf  float (fixed-point)
+//   %g %G %.ng         float (shortest: fixed or scientific)
+//   %3d                int with field width (space-padded)
+//   %04x %08X          hex with zero-padding
+//   %o                 octal
+//
+// [...] reverses contents, so arguments end up in the natural
+// left-to-right consumption order as we scan the format string.
+//
+// Variables used in loops MUST be declared before the loop with @type,
+// then updated inside the loop with &var =.  Re-declaring inside a
+// loop silently loads the old value instead of binding the stack top.
+
+// ---- helpers (defined before printf so they are registered as functions) ----
+
+// count digits in given base
+:count_digits [val@i64 base@i64]
+    0 count@i64
+    (val 0 ==) count_digits_done jnz
+
+count_digits_loop:
+    (count 1 +) &count =
+    (val base /) &val =
+    (val 0 !=) count_digits_loop jnz
+
+count_digits_done:
+    count
+    ret
+;
+
+// print padding characters
+:print_pad [count@i64 ch@i8]
+    (count 0 <=) print_pad_done jnz
+
+print_pad_loop:
+    ch !@char print
+    (count 1 -) &count =
+    (count 0 >) print_pad_loop jnz
+
+print_pad_done:
+    ret
+;
+
+// number emitter: val base hex_off
+// Prints val in given base. hex_off is ASCII offset for letters (97='a', 65='A', 0=none).
+:fmt_emit [val@i64 base@i64 hex_off@i8]
+    0 rem@i64
+    (val 0 ==) fmt_emit_zero jnz
+    (val base >=) fmt_emit_rec jnz
+    (val 10 <) fmt_emit_single_dec jnz
+    (val 10 -) hex_off + !@char print
+    ret
+fmt_emit_single_dec:
+    (val 48 +) !@char print
+    ret
+fmt_emit_rec:
+    (val base %) &rem =
+    (val base /) base hex_off fmt_emit
+    (rem 10 <) fmt_emit_rem_dec jnz
+    (rem 10 -) hex_off + !@char print
+    ret
+fmt_emit_rem_dec:
+    (rem 48 +) !@char print
+    ret
+fmt_emit_zero:
+    '0' !@char print
+    ret
+;
+
+// ---- printf ----
+
+:printf [fmt@memptr]
+    0 pos@i64
+    i8:0 ch@i8
+    i64:0 precision@i64
+    i64:0 scaled@i64
+    i64:0 scale_i@i64
+    i64:0 ipart@i64
+    0.0 val_f@f64
+    0 width@i64
+    i8:0 pad_char@i8
+    0 pad_width@i64
+
+// ---- main loop ----
+
+fmt_loop:
+    (fmt pos mread@i8) &ch =
+    (ch 0 ==) fmt_done jnz
+    (ch '%' ==) fmt_pct jnz
+    ch !@char print
+    (pos 1 +) &pos =
+    fmt_loop jmp
+
+// ---- format specifier dispatch ----
+
+fmt_pct:
+    (pos 1 +) &pos =
+    (fmt pos mread@i8) &ch =
+    (ch 0 ==) fmt_done jnz
+    // reset width, pad_char, precision
+    0 &width =
+    i8:32 &pad_char =
+    6 &precision =
+    // check for '0' flag (zero-padding)
+    (ch 48 !=) fmt_pct_no_zero jnz
+    i8:48 &pad_char =
+    (pos 1 +) &pos =
+    (fmt pos mread@i8) &ch =
+
+fmt_pct_no_zero:
+    // parse width digits
+    (ch 48 <) fmt_pct_no_width jnz
+    (ch 57 >) fmt_pct_no_width jnz
+    (ch 48 -) &width =
+
+fmt_w_loop:
+    (pos 1 +) &pos =
+    (fmt pos mread@i8) &ch =
+    (ch 48 <) fmt_pct_no_width jnz
+    (ch 57 >) fmt_pct_no_width jnz
+    (width 10 *) (ch 48 -) + &width =
+    fmt_w_loop jmp
+
+fmt_pct_no_width:
+    // check for '.' — start of precision
+    (ch 46 !=) fmt_pct_dispatch jnz
+    // parse precision digits
+    (pos 1 +) &pos =
+    (fmt pos mread@i8) &ch =
+    0 &precision =
+
+fmt_prec_loop:
+    (ch 48 <) fmt_pct_dispatch jnz
+    (ch 57 >) fmt_pct_dispatch jnz
+    (precision 10 *) (ch 48 -) + &precision =
+    (pos 1 +) &pos =
+    (fmt pos mread@i8) &ch =
+    fmt_prec_loop jmp
+
+fmt_pct_dispatch:
+    (ch 'd' ==) fmt_d jnz
+    (ch 's' ==) fmt_s jnz
+    (ch 'c' ==) fmt_c jnz
+    (ch '%' ==) fmt_pct_pct jnz
+    (ch 'x' ==) fmt_x jnz
+    (ch 'X' ==) fmt_X jnz
+    (ch 'o' ==) fmt_o jnz
+    (ch 'g' ==) fmt_g jnz
+    (ch 'G' ==) fmt_G jnz
+    (ch 'f' ==) fmt_f jnz
+    (ch 'l' ==) fmt_pct_l jnz
+
+fmt_pct_end:
+    (pos 1 +) &pos =
+    fmt_loop jmp
+
+// %lf / %lg: read next char
+
+fmt_pct_l:
+    (pos 1 +) &pos =
+    (fmt pos mread@i8) &ch =
+    (ch 'f' ==) fmt_f jnz
+    (ch 'g' ==) fmt_g jnz
+    (ch 'G' ==) fmt_G jnz
+    fmt_pct_end jmp
+
+// ---- %d ----
+
+fmt_d:
+    dup (dup 0 <) fmt_d_neg jnz
+    (width 0 ==) fmt_d_no_pad jnz
+    dup 10 count_digits &pad_width =
+    (width pad_width -) &pad_width =
+    (pad_width 0 >) fmt_d_pad jnz
+    drop
+    10 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_d_pad:
+    drop
+    pad_width pad_char print_pad
+    10 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_d_no_pad:
+    drop
+    10 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_d_neg:
+    '-' !@char print
+    (0 swap -) &pad_width =
+    (width 0 ==) fmt_d_neg_no_pad jnz
+    pad_width 10 count_digits &pad_width =
+    (width pad_width - 1 -) &pad_width =
+    (pad_width 0 >) fmt_d_neg_pad jnz
+    pad_width 10 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_d_neg_pad:
+    pad_width pad_char print_pad
+    pad_width 10 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_d_neg_no_pad:
+    pad_width 10 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+// ---- %s ----
+
+fmt_s:
+    printstr
+    fmt_pct_end jmp
+
+// ---- %c ----
+
+fmt_c:
+    !@char print
+    fmt_pct_end jmp
+
+// ---- %% ----
+
+fmt_pct_pct:
+    '%' !@char print
+    fmt_pct_end jmp
+
+// ---- %x ----
+
+fmt_x:
+    dup (dup 0 <) fmt_x_neg jnz
+    (width 0 ==) fmt_x_no_pad jnz
+    dup 16 count_digits &pad_width =
+    (width pad_width -) &pad_width =
+    (pad_width 0 >) fmt_x_pad jnz
+    drop
+    16 i8:97 fmt_emit
+    fmt_pct_end jmp
+
+fmt_x_pad:
+    drop
+    pad_width pad_char print_pad
+    16 i8:97 fmt_emit
+    fmt_pct_end jmp
+
+fmt_x_no_pad:
+    drop
+    16 i8:97 fmt_emit
+    fmt_pct_end jmp
+
+fmt_x_neg:
+    '-' !@char print
+    (0 swap -) 16 i8:97 fmt_emit
+    fmt_pct_end jmp
+
+// ---- %X ----
+
+fmt_X:
+    dup (dup 0 <) fmt_X_neg jnz
+    (width 0 ==) fmt_X_no_pad jnz
+    dup 16 count_digits &pad_width =
+    (width pad_width -) &pad_width =
+    (pad_width 0 >) fmt_X_pad jnz
+    drop
+    16 i8:65 fmt_emit
+    fmt_pct_end jmp
+
+fmt_X_pad:
+    drop
+    pad_width pad_char print_pad
+    16 i8:65 fmt_emit
+    fmt_pct_end jmp
+
+fmt_X_no_pad:
+    drop
+    16 i8:65 fmt_emit
+    fmt_pct_end jmp
+
+fmt_X_neg:
+    '-' !@char print
+    (0 swap -) 16 i8:65 fmt_emit
+    fmt_pct_end jmp
+
+// ---- %o ----
+
+fmt_o:
+    dup (dup 0 <) fmt_o_neg jnz
+    (width 0 ==) fmt_o_no_pad jnz
+    dup 8 count_digits &pad_width =
+    (width pad_width -) &pad_width =
+    (pad_width 0 >) fmt_o_pad jnz
+    drop
+    8 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_o_pad:
+    drop
+    pad_width pad_char print_pad
+    8 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_o_no_pad:
+    drop
+    8 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+fmt_o_neg:
+    '-' !@char print
+    (0 swap -) 8 i8:0 fmt_emit
+    fmt_pct_end jmp
+
+// ---- %f (default precision 6, set by fmt_pct) ----
+
+fmt_f:
+
+fmt_f_go:
+    !@f64 &val_f =
+    (val_f 0.0 <) fmt_f_neg jnz
+    fmt_f_pos jmp
+
+fmt_f_neg:
+    '-' !@char print
+    (0.0 val_f -) &val_f =
+
+fmt_f_pos:
+    1 &scale_i =
+    0 &ipart =
+    (precision 0 ==) fmt_f_scaled jnz
+
+fmt_f_scale_loop:
+    (scale_i 10 *) &scale_i =
+    (ipart 1 +) &ipart =
+    (ipart precision <) fmt_f_scale_loop jnz
+
+fmt_f_scaled:
+    val_f scale_i !@f64 * 0.5 + !@i64 &scaled =
+    scaled scale_i / &ipart =
+    scaled scale_i % &scaled =
+    ipart print
+    (precision 0 ==) fmt_f_done jnz
+    '.' !@char print
+
+fmt_f_frac_loop:
+    scale_i 10 / &scale_i =
+    (scale_i 0 ==) fmt_f_done jnz
+    scaled scale_i / '0' + !@char print
+    scaled scale_i % &scaled =
+    fmt_f_frac_loop jmp
+
+fmt_f_done:
+    fmt_pct_end jmp
+
+// ---- %g / %G ----
+//
+// Algorithm:
+//   1. Normalize val to [1.0, 10.0); ipart = exponent
+//   2. If exponent < -4 or exponent >= precision → scientific
+//   3. Otherwise → fixed-point with trailing zeros stripped
+//
+// The `dup` at entry keeps the original float on the stack for cleanup.
+
+fmt_G:
+    dup !@f64 &val_f =
+    (val_f 0.0 <) fmt_g_neg jnz
+    (val_f 0.0 ==) fmt_g_zero jnz
+    fmt_g_norm jmp
+
+fmt_g:
+    dup !@f64 &val_f =
+    (val_f 0.0 <) fmt_g_neg jnz
+    (val_f 0.0 ==) fmt_g_zero jnz
+    fmt_g_norm jmp
+
+fmt_g_neg:
+    '-' !@char print
+    (0.0 val_f -) &val_f =
+    (val_f 0.0 ==) fmt_g_zero jnz
+    fmt_g_norm jmp
+
+// Special case: 0.0 → "0"
+fmt_g_zero:
+    '0' !@char print
+    drop
+    fmt_pct_end jmp
+
+// Normalize: divide by 10 while >= 10, multiply by 10 while < 1
+// ipart = exponent
+
+fmt_g_norm:
+    0 &ipart =
+
+fmt_g_up:
+    (val_f 10.0 <) fmt_g_dn jnz
+    (val_f 10.0 /) &val_f =
+    (ipart 1 +) &ipart =
+    fmt_g_up jmp
+
+fmt_g_dn:
+    (val_f 1.0 >=) fmt_g_decide jnz
+    (val_f 10.0 *) &val_f =
+    (ipart 1 -) &ipart =
+    fmt_g_dn jmp
+
+fmt_g_decide:
+    (ipart -4 <) fmt_g_sci jnz
+    (ipart precision >=) fmt_g_sci jnz
+    // Fixed-point: total significant digits = precision
+    // scale_i = 10^(precision-1), then scaled = round(val_f * scale_i)
+    (precision 1 -) &scaled =
+    1 &scale_i =
+    0 &pad_width =
+
+fmt_g_fp_scale:
+    (pad_width scaled >=) fmt_g_fp_done jnz
+    (scale_i 10 *) &scale_i =
+    (pad_width 1 +) &pad_width =
+    fmt_g_fp_scale jmp
+
+fmt_g_fp_done:
+    // scale_i = 10^(precision-1)
+    val_f scale_i !@f64 * 0.5 + !@i64 &scaled =
+    // digits_after = precision - ipart - 1
+    (precision ipart - 1 -) &pad_width =
+    // Rebuild int_scale = 10^digits_after
+    1 &scale_i =
+    0 &ipart =
+
+fmt_g_fp_iscale:
+    (ipart pad_width >=) fmt_g_fp_print jnz
+    (scale_i 10 *) &scale_i =
+    (ipart 1 +) &ipart =
+    fmt_g_fp_iscale jmp
+
+fmt_g_fp_print:
+    // scale_i = 10^digits_after, scaled has all significant digits
+    scaled scale_i / &ipart =
+    scaled scale_i % &scaled =
+    ipart print
+    (pad_width 0 ==) fmt_g_rstrip jnz
+    '.' !@char print
+
+fmt_g_fp_loop:
+    scale_i 10 / &scale_i =
+    (scale_i 0 ==) fmt_g_rstrip jnz
+    scaled scale_i / '0' + !@char print
+    scaled scale_i % &scaled =
+    (scaled 0 ==) fmt_g_rstrip jnz
+    fmt_g_fp_loop jmp
+
+fmt_g_rstrip:
+    drop
+    fmt_pct_end jmp
+
+// ---- %g scientific notation ----
+// val_f in [1.0, 10.0), ipart = exponent. Print d.dddde+XX
+
+fmt_g_sci:
+    // Save exponent in pad_width before ipart gets overwritten
+    ipart &pad_width =
+    // Find scale_i = 10^(ipart+1) or 10^1 if exponent is negative
+    1 &scale_i =
+    0 &precision =
+
+fmt_g_sci_scale:
+    (precision ipart >=) fmt_g_sci_scale_done jnz
+    (scale_i 10 *) &scale_i =
+    (precision 1 +) &precision =
+    fmt_g_sci_scale jmp
+
+fmt_g_sci_scale_done:
+    val_f scale_i !@f64 * 0.5 + !@i64 &scaled =
+    scaled scale_i / '0' + !@char print
+    scaled scale_i % &scaled =
+    (precision 0 ==) fmt_g_sci_exp jnz
+    '.' !@char print
+
+fmt_g_sci_fig_loop:
+    scale_i 10 / &scale_i =
+    (scale_i 0 ==) fmt_g_sci_exp jnz
+    scaled scale_i / '0' + !@char print
+    scaled scale_i % &scaled =
+    (scaled 0 ==) fmt_g_sci_exp jnz
+    fmt_g_sci_fig_loop jmp
+
+fmt_g_sci_exp:
+    // Recover exponent from pad_width
+    pad_width &ipart =
+    'e' !@char print
+    (ipart 0 <) fmt_g_sci_eneg jnz
+    '+' !@char print
+    (ipart 10 /) '0' + !@char print
+    (ipart 10 %) '0' + !@char print
+    drop
+    fmt_pct_end jmp
+
+fmt_g_sci_eneg:
+    '-' !@char print
+    (0 ipart -) &ipart =
+    (ipart 10 /) '0' + !@char print
+    (ipart 10 %) '0' + !@char print
+    drop
+    fmt_pct_end jmp
+
+// ---- end of printf ----
+
+fmt_done:
+    ret
+;
+
+// ---- tests ----
+
+[printf "Hello, World!\n"]
+[printf "%d\n" 42]
+[printf "%d + %d = %d\n" 3 4 7]
+[printf "%s\n" "hello"]
+[printf "%c\n" 'A']
+[printf "100%%\n"]
+[printf "char=%c num=%d str=%s\n" 'Z' 100 "test"]
+[printf "%d\n" -42]
+[printf "%f\n" 3.14]
+[printf "%f\n" -3.14]
+[printf "%f\n" 0.0]
+[printf "%f\n" 42.0]
+[printf "%.2f\n" 3.14159]
+[printf "%.1f\n" 3.14159]
+[printf "%.0f\n" 3.14159]
+[printf "%.4f\n" 0.5]
+[printf "%.2f\n" 100.0]
+[printf "%lf\n" 2.71828]
+[printf "%.3lf\n" 1.23456]
+[printf "%3d\n" 42]
+[printf "%10d\n" 42]
+[printf "%x\n" 255]
+[printf "%X\n" 255]
+[printf "%04x\n" 10]
+[printf "%08X\n" 255]
+[printf "%o\n" 8]
+[printf "%o\n" 255]
+[printf "%g\n" 3.14]
+[printf "%g\n" 0.00001]
+[printf "%g\n" 100000.0]
+[printf "%.3g\n" 3.14159]
+[printf "%g\n" 0.5]
+[printf "%g\n" 0.0]
+[printf "val=%d f=%.2f\n" 7 3.14]
+
+halt

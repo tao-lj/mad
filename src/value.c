@@ -126,6 +126,8 @@ int64_t val_as_i64(Value v) {
     case T_U32:  return (int64_t)v.as.u32;
     case T_I64:  return v.as.i64;
     case T_U64:  return (int64_t)v.as.u64;
+    case T_F32:  return (int64_t)v.as.f32;
+    case T_F64:  return (int64_t)v.as.f64;
     case T_BOOL: return (int64_t)v.as.b;
     case T_CHAR: return (int64_t)v.as.c;
     default:     return 0;

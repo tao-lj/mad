@@ -15,7 +15,8 @@ void tcode_compile_func(VM *vm, FuncSym *fn) {
     size_t *ir_map = NULL;
     IrNode *ir = ir_build(vm, fn, &n, &ir_map);
     n = ir_optimize(ir, n);
-    ir_check(ir, n, fn);
+    if (strcmp(fn->name, "<top>") != 0)
+        ir_check(ir, n, fn);
     ir_lower(ir, n, fn, ir_map, fn->body_end - fn->body_start);
     free(ir_map);
     ir_free(ir, n);

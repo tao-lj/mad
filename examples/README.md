@@ -59,3 +59,17 @@ File I/O round trip: opens a file for writing with `fopen`, writes a string
 with `fwrite`, closes it, reopens for reading with `fopen`, queries size with
 `fsize`, reads back with `fread`, prints with `printstr`, and closes. Exercises
 the `file` handle type and all five file I/O built-in words.
+
+## printf
+
+MAD-level formatted output: a `:printf` function written entirely in MAD
+that scans a format string byte-by-byte with `mread@i8`, dispatches
+`%d` / `%s` / `%c` / `%%` via label+jnz chains, and consumes arguments
+from the stack in order. Tests exercise plain strings, integer formatting,
+string/char arguments, literal percent, mixed specifiers, and negative
+numbers.
+
+Key language lesson: variables used inside loops must be declared *before*
+the loop (`0 pos@i64`); re-declaring inside the loop (e.g. `ch@i8`) on
+the second pass silently loads the old value instead of binding the stack
+top. Update with `&var =` instead.
