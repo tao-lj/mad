@@ -390,6 +390,9 @@ static void irb_word(IrBuilder *b, const Token *t) {
     if (word_is(s, "fread"))  { irb_emit(b, IR_FREAD, t);  return; }
     if (word_is(s, "fwrite")) { irb_emit(b, IR_FWRITE, t); tys_push(b, T_I64);  return; }
 
+    // Shell command
+    if (word_is(s, "system")) { irb_emit(b, IR_SYSTEM, t); tys_push(b, T_I64); return; }
+
     // Fallback: variable load or implicit declaration from the stack top.
     char base[MAX_NAME];
     bool has_ty = false;
@@ -1088,6 +1091,12 @@ bool ir_apply(const IrNode *ir, StackState *stack, const FuncSym *fn) {
         stack_push(stack, T_I64);
         return true;
 
+    // — system: mem → exit_code —
+    case IR_SYSTEM:
+        if (!stack_pop(stack, &a)) { ir_error(ir, "stack underflow before system"); return false; }
+        stack_push(stack, T_I64);
+        return true;
+
     // — control flow —
     case IR_JMP:
         return true;
@@ -1382,6 +1391,7 @@ void ir_lower(const IrNode *ir, size_t n, FuncSym *fn,
         case IR_FSIZE:  op->code = dt[OP_FSIZE];  break;
         case IR_FREAD:  op->code = dt[OP_FREAD];  break;
         case IR_FWRITE: op->code = dt[OP_FWRITE]; break;
+        case IR_SYSTEM: op->code = dt[OP_SYSTEM]; break;
         case IR_CALL:
             op->code = dt[OP_CALL_FUNC];
             op->u.i  = ir[i].u.i;

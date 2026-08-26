@@ -117,6 +117,7 @@ User-defined functions/labels shadow built-in words of the same name.
 | `fsize` | `( file -- i64 )` | query file size without moving position |
 | `fread` | `( file n -- count mem )` | read up to n bytes; count≤n |
 | `fwrite` | `( buf file -- written )` | write buf contents; returns bytes written |
+| `system` | `( cmd -- rc )` | execute shell command; rc is raw `waitpid` status |
 
 `T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}.
 

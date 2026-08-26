@@ -110,6 +110,7 @@ x                // 加载 x
 | `fsize` | `( file -- i64 )` | 查询文件大小（不移动位置） |
 | `fread` | `( file n -- count mem )` | 读取最多 n 字节；count≤n |
 | `fwrite` | `( buf file -- written )` | 写入 buf 全部内容；返回写入字节数 |
+| `system` | `( cmd -- rc )` | 执行 shell 命令；rc 为原始 `waitpid` 状态值 |
 
 `T` ∈ {i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, bool, char}。
 

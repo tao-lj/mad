@@ -162,6 +162,7 @@
 | `fsize` | `( file -- i64 )` | 查询文件大小（不移动位置） |
 | `fread` | `( file n -- count mem )` | 读取最多 n 字节；count≤n |
 | `fwrite` | `( buf file -- written )` | 写入 buf 全部内容；返回写入字节数 |
+| `system` | `( cmd -- rc )` | 执行 shell 命令；rc 为原始 `waitpid` 状态值 |
 | `jmp` / `jump` | `( -- )` | 无条件跳转 |
 | `jz` | `( condition -- )` | 为零/false 时跳转 |
 | `jnz` | `( condition -- )` | 非零/true 时跳转 |

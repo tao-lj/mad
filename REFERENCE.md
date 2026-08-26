@@ -162,6 +162,7 @@ Integer→label is forbidden.
 | `fsize` | `( file -- i64 )` | query file size without moving position |
 | `fread` | `( file n -- count mem )` | read up to n bytes; count≤n |
 | `fwrite` | `( buf file -- written )` | write buf contents; returns bytes written |
+| `system` | `( cmd -- rc )` | execute shell command; rc is raw `waitpid` status |
 | `jmp` / `jump` | `( -- )` | unconditional jump (static or dynamic) |
 | `jz` | `( condition -- )` | jump if zero/false |
 | `jnz` | `( condition -- )` | jump if nonzero/true |

@@ -566,6 +566,7 @@ static void execute_code(VM *vm, FuncSym *fn) {
         disp[OP_FSIZE]  = &&L_FSIZE;
         disp[OP_FREAD]  = &&L_FREAD;
         disp[OP_FWRITE] = &&L_FWRITE;
+        disp[OP_SYSTEM] = &&L_SYSTEM;
         disp[OP_CALL_FUNC] = &&L_CALL_FUNC;
         disp[OP_CALL_IND] = &&L_CALL_IND;
         disp[OP_JMP] = &&L_JMP;
@@ -1271,6 +1272,17 @@ L_FWRITE: {
     MemObj *m = require_mem(vm, mid, ip->line);
     size_t put = fwrite(m->data, 1, m->len, fp);
     valstack_push(st, make_i64((int64_t)put));
+    NEXT();
+}
+
+L_SYSTEM: {
+    Value vcmd = valstack_pop(st, ip->text);
+    uint64_t mid = mem_id_of(vm, vcmd, ip->line, "system");
+    MemObj *m = require_mem(vm, mid, ip->line);
+    if (!memchr(m->data, '\0', m->len))
+        fatal_at(ip->line, "system: command is not NUL-terminated");
+    int rc = system((const char *)m->data);
+    valstack_push(st, make_i64((int64_t)rc));
     NEXT();
 }
 
